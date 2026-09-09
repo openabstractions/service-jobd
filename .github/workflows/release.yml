@@ -226,15 +226,43 @@ jobs:
               try { Invoke-WebRequest 'http://127.0.0.1:8099/thing.bin' -UseBasicParsing | Out-Null; break }
               catch { Start-Sleep -Milliseconds 200 }
             }
-            & "$dir\dl.exe" 'http://127.0.0.1:8099/thing.bin' -o "$work\out"
+            $fetched = & "$dir\dl.exe" 'http://127.0.0.1:8099/thing.bin' -o "$work\out" 2>&1
+            $fetched
             if ($LASTEXITCODE -ne 0) { throw "dl exited $LASTEXITCODE with nothing supervising" }
             if (-not (Test-Path "$work\out\thing.bin")) { throw 'dl reported success and delivered nothing' }
-            & "$dir\jobctl.exe" list
+            $named = $fetched | Select-String -Pattern '^\s*job\s+(\S+)'
+            if (-not $named) { throw 'dl did not name the job it created' }
+            $id = $named.Matches[0].Groups[1].Value
+
+            $listed = & "$dir\jobctl.exe" list
+            $listed
             if ($LASTEXITCODE -ne 0) { throw "jobctl exited $LASTEXITCODE with nothing supervising" }
+            # Exit 0 is not the property. Two tools out of one installer have to
+            # be looking at ONE store, and only the record dl just wrote says so.
+            if (-not ($listed | Select-String -SimpleMatch $id)) {
+              throw "jobctl read a store with no $id in it: the two tools in this package disagree about where the store is"
+            }
           } finally {
             Stop-Process -Id $srv.Id -Force
           }
-          'ok    dl delivered the bytes and jobctl read the store, with no jobd running'
+          'ok    dl delivered the bytes and jobctl read back the same job, with no jobd running'
+
+      # The shell a person actually has after running the MSI: nothing set, both
+      # tools obliged to find the store the machine already has. This is the case
+      # the first install ever performed died on, and the case no test had, because
+      # every harness in the tree exports the answer before it starts.
+      - name: the tools with nothing set
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Abstraction'
+          Remove-Item Env:ABSTRACTION_STORE, Env:JOB_STORE, Env:MODELGET_STORE -ErrorAction SilentlyContinue
+          & "$dir\jobctl.exe" list
+          if ($LASTEXITCODE -ne 0) { throw "jobctl exited $LASTEXITCODE with nothing set" }
+          & "$dir\dl.exe" tiers
+          if ($LASTEXITCODE -ne 0) { throw "dl tiers exited $LASTEXITCODE with nothing set" }
+          $store = Join-Path $env:USERPROFILE '.abstraction'
+          if (-not (Test-Path $store)) { throw "neither tool resolved $store" }
+          'ok    both tools found the store this machine already has, with nothing set'
 
       - name: uninstall
         shell: pwsh

@@ -45,6 +45,7 @@ import (
 	config "github.com/openabstractions/abstraction-config/go"
 	"github.com/openabstractions/abstraction-download/go"
 	_ "github.com/openabstractions/abstraction-download/go/all"
+	identity "github.com/openabstractions/abstraction-identity"
 	job "github.com/openabstractions/abstraction-job/go"
 )
 
@@ -75,6 +76,8 @@ func main() {
 		cmdStatus(os.Args[2:])
 	case "setup":
 		cmdSetup(os.Args[2:])
+	case "discover":
+		cmdDiscover(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -93,6 +96,8 @@ func usage() {
   jobd uninstall               remove it
   jobd status [--exit-code]    what is in the store right now; with the flag,
                                exit 1 unless a supervisor is alive (a HEALTHCHECK)
+  jobd discover                ask the supervisor over its bus who it is and who
+                               it takes this caller for; exit 1 unless it answers
   jobd setup --nas-store <p>   record what this machine has, once, so that every
                                application finds it without being configured
   jobd setup --show            what is configured, and which file said so
@@ -119,6 +124,13 @@ the drop folder:
   a text file put in <store>/wanted/ is a request: a URL per line, optionally a
   sha256:<hex> and a destination inside the store. The folder answers by
   renaming it: .accepted, then .done or .failed; .refused says which line and why`)
+}
+
+func firstSentence(s string) string {
+	if i := strings.Index(s, ". "); i > 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func fatal(err error) {
@@ -368,7 +380,20 @@ func cmdRun(args []string) {
 	// a race for a string.
 	serving := &atomic.Pointer[string]{}
 	serving.Store(&tier)
-	if err := download.Heartbeat(store, owner, tier, *interval); err != nil {
+	// The bus before the heartbeat, because the heartbeat is how a caller
+	// learns the bus's name. Without one the supervisor is still a supervisor:
+	// it sweeps, and applications reach it through the store alone.
+	var looks <-chan struct{}
+	endpoint := ""
+	if bus, err := download.ListenBus(owner, func() string { return *serving.Load() }); err == nil {
+		defer bus.Close()
+		looks, endpoint = bus.C(), bus.Endpoint
+		l := identity.Ceiling()
+		fmt.Printf("jobd: listening at %s (%s/%s; callers bound by %s)\n", endpoint, l.Platform, l.Transport, firstSentence(l.Binding))
+	} else {
+		fmt.Fprintf(os.Stderr, "jobd: no bus (%v); reachable through the store only, sweeping on the timer\n", err)
+	}
+	if err := download.Heartbeat(store, owner, tier, endpoint, *interval); err != nil {
 		fmt.Fprintf(os.Stderr, "jobd: could not announce (%v); applications will download in-process\n", err)
 	}
 	// Stop announcing on a clean exit, so nothing hands work to a supervisor that
@@ -381,19 +406,6 @@ func cmdRun(args []string) {
 	// releases it immediately instead of after the expiry.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	// Listen for nudges. An application that has just submitted work can say
-	// "look now" instead of leaving it to sit until the next tick. The socket is
-	// an accelerant, never a source of truth: it carries no job id and no
-	// payload, so losing it costs latency and nothing else — which is why the
-	// ticker below stays exactly as it was.
-	var nudges <-chan struct{}
-	if n, err := download.ListenForNudges(store); err == nil {
-		defer n.Close()
-		nudges = n.C()
-	} else {
-		fmt.Fprintf(os.Stderr, "jobd: not listening for nudges (%v); sweeping on the timer only\n", err)
-	}
 
 	// Announce on a clock of its own, because the thing that starves a heartbeat
 	// is the work it is reporting on.
@@ -418,7 +430,7 @@ func cmdRun(args []string) {
 			case <-ctx.Done():
 				return
 			case <-beat.C:
-				download.Heartbeat(store, owner, *serving.Load(), *interval)
+				download.Heartbeat(store, owner, *serving.Load(), endpoint, *interval)
 			}
 		}
 	}()
@@ -438,7 +450,7 @@ func cmdRun(args []string) {
 		// unless the answer changed.
 		if now := r.Rebind(); now != *serving.Load() {
 			serving.Store(&now)
-			download.Heartbeat(store, owner, now, *interval)
+			download.Heartbeat(store, owner, now, endpoint, *interval)
 			fmt.Printf("%s  delegates-to=%s\n", time.Now().Format(time.RFC3339), now)
 		}
 		rec, del, ad, dlv, problems := pass(ctx, r)
@@ -451,7 +463,7 @@ func cmdRun(args []string) {
 		case <-ctx.Done():
 			fmt.Println("jobd: stopping. Anything in flight keeps its checkpoint.")
 			return
-		case <-nudges:
+		case <-looks:
 		case <-t.C:
 		}
 	}

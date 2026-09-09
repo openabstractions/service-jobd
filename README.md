@@ -1,7 +1,7 @@
 # service-jobd
 
-**In development.** Tagged `v0.2.0`, but `jobd discover` is unimplemented and
-the signed Windows installer is `UNPROVEN` — see Status.
+**In development.** Tagged `v0.2.0`, which predates `jobd discover` and the
+supervisor bus; the signed Windows installer is `UNPROVEN` — see Status.
 
 For someone running applications built on these abstractions: `jobd` is an
 optional supervisor process that finishes and tidies up jobs — downloads, today
@@ -51,6 +51,8 @@ jobd start      launch a detached supervisor that outlives this shell
 jobd stop       stop the supervisor watching this store
 jobd run        supervise in the foreground until interrupted
 jobd once       one pass over the store, then exit
+jobd discover   ask the announced supervisor whether it answers, and who it
+                takes this process for
 jobd setup      record configuration every program on this machine will read
 jobd install    print the schtasks commands that register `jobd once`
 jobd uninstall  print the schtasks commands that remove them
@@ -71,11 +73,24 @@ jobd uninstall  print the schtasks commands that remove them
   no attached console, elsewhere in its own session — writing its output to
   `jobd.log` inside the store.
 - `jobd install` and `jobd uninstall` print commands and run nothing.
+- `jobd discover` prints what the heartbeat says, then what the supervisor's bus
+  says, then who the supervisor took this process for, and exits 1 unless
+  somebody answered. It is the check `jobd status` cannot make: a heartbeat
+  outlives the process that wrote it.
 
 A supervisor announces itself by writing a heartbeat, `supervisor.json`, into
 the job store, and every program reads that same file to decide whether one is
 alive. Both sides need only the store, so it works across a share as well as on
 one machine. [Design notes](https://github.com/openabstractions/abstractions/blob/main/docs/discovery-ipc.md).
+
+The heartbeat predicts and a connection decides. A supervisor also opens a bus —
+a local transport whose name it invents and publishes in that same heartbeat —
+and a program that can reach it learns at once whether anybody is still there,
+rather than waiting for a timestamp to go stale. Every request on the bus
+carries the caller as the kernel names it, and a caller the machine cannot name
+is refused; nothing on the bus grants anything. A supervisor across a share, or
+on a machine that cannot name a caller at all, announces no bus and is reached
+through the store alone, exactly as before.
 
 A text file dropped into `<store>/wanted/` is also a request: a URL per line,
 optionally `sha256:<hex>` and a destination inside the store. The folder answers
@@ -118,13 +133,16 @@ it performs the transfer itself.
 
 Known gaps:
 
-- **`jobd discover` does not exist in any build.** `discover.go` and
-  `discovery/` implement a local socket that answers `absent`, `present` or
-  `incompatible`, but nothing calls them: `jobd discover` falls through to usage
-  and exits 2, in `v0.2.0` and on `main`, and a running supervisor binds no
-  socket. Liveness is decided by the heartbeat file described above, which
-  cannot distinguish a killed supervisor from a live one until its timestamp
-  goes stale.
+- **`jobd discover` is on `main` and not in `v0.2.0`.** It is implemented over
+  the bus described above; in the tagged release it falls through to usage and
+  exits 2, and a supervisor built from that tag binds nothing and announces no
+  endpoint, so liveness there is the heartbeat's timestamp alone.
+- **The bus is `UNPROVEN` off Windows.** It has been exercised end to end on
+  Windows over a named pipe, in Go and from Python, including a caller the
+  kernel refused to name. The Linux and macOS transports are compiled and not
+  executed. On macOS the identity layer caps what a unix socket can say about a
+  peer below what the bus asks for, so a supervisor there is expected to
+  announce no bus and be reached through the store; expected, not observed.
 - **The default store path is not platform-correct.** `~/.abstraction` is used
   unmodified on Windows and macOS rather than a directory conventional there.
 - **`jobd install` and `jobd uninstall` always print Windows `schtasks`
@@ -142,11 +160,11 @@ Known gaps:
 - Windows, Linux or macOS. `go build` succeeds for all three; the scheduled-task
   convenience commands are Windows-only in practice — see Status.
 - [abstraction-download](https://github.com/openabstractions/abstraction-download)
-  at `go/v0.2.1`,
+  at `go/v0.3.0`,
   [abstraction-job](https://github.com/openabstractions/abstraction-job) at
-  `go/v0.2.0`, and
+  `go/v0.3.0`, and
   [abstraction-config](https://github.com/openabstractions/abstraction-config)
-  at `go/v0.1.1`.
+  at `go/v0.2.0`.
 - [go-winio](https://github.com/Microsoft/go-winio) v0.6.2, for named pipes.
   Windows has no named-pipe support in its standard library and no overlapped
   I/O, without which a client reading from an unresponsive supervisor cannot

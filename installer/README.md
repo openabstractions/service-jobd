@@ -67,10 +67,20 @@ cannot gate away.
   `payload.tsv` name `UNRESOLVED`, the workflow leaves them out and says so, and
   `abstraction.wxs` gates them on `$(var.Panel)` and `$(var.Cpp)`. Somebody has
   to decide which repository publishes them.
-- **Nothing has been installed.** Both MSIs build, and their file, feature,
-  registry, environment and custom-action tables have been read back out of the
-  built packages. No package has been run. The `verify` job of the release
-  workflow is what runs one; it has never been triggered.
+- **One package has been installed, once**, by the `verify` job of the release
+  workflow — run 34364113642, 2026-09-09. It installed; its files, `PATH` entry,
+  two scheduled tasks and registry key were all in place; and `dl` fetched a file
+  with no supervisor running. `jobctl` then refused, because it demanded
+  `JOB_STORE` while `dl` discovered the store. Fixed since: `jobctl` resolves a
+  root the way `dl` and `jobd` do, and the step now requires it to name the
+  record `dl` just wrote rather than merely to exit 0.
+- **Nothing has ever uninstalled this package.** The run above stopped at the
+  first failure, so `uninstall` and `what it left behind` have still never
+  executed. Two things could go wrong there and no evidence says otherwise: the
+  five-minute sweep task holding `jobd.exe` open while `msiexec /x` deletes it,
+  and `HKCU\Software\OpenAbstractions` surviving as an empty parent key —
+  `RemoveRegistryKey` in `abstraction.wxs` is meant to prevent the second and has
+  never been observed doing it.
 - **Two builds of one version install alongside each other.** `abstraction.wxs`
   sets no `ProductCode`, so WiX generates one per build, and `MajorUpgrade`
   without `AllowSameVersionUpgrades` will not see the first install. The
