@@ -14,6 +14,6 @@
 id		repo						ref
 self		-						-
 installer	-						-
-download	openabstractions/abstraction-download		bbc807ad084f999889412447e3d9949d7754e3d1
-job		openabstractions/abstraction-job		91800d8332657ea528ef491b7a65d59963aa0743
+download	openabstractions/abstraction-download		b344af364b44468c590e1f2cb1e61812e6a4223b
+job		openabstractions/abstraction-job		5c396e8b5ed0c3aa91bc5872fa0785d11624b35c
 UNRESOLVED	-						-
