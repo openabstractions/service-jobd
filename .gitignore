@@ -1,0 +1,7 @@
+/service-jobd
+/service-jobd.exe
+/jobd
+/jobd.exe
+/dist/
+/bin/
+*.log

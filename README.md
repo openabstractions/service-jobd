@@ -1,0 +1,157 @@
+# service-jobd
+
+**In development.** Tagged `v0.2.0`, but `jobd discover` is unimplemented and
+the signed Windows installer is `UNPROVEN` — see Status.
+
+For someone running applications built on these abstractions: `jobd` is an
+optional supervisor process that finishes and tidies up jobs — downloads, today
+— that were started by a program which may no longer be running.
+
+A job (a unit of work recorded in a job store — see
+[abstraction-job](https://github.com/openabstractions/abstraction-job)) can
+outlive the program that created it, and three things then go unattended:
+
+- a transfer handed to Windows BITS keeps running after the application exits,
+  but BITS will not release the finished file, and nothing checks its digest,
+  until some process collects it;
+- a machine that reboots mid-transfer leaves a job whose lease (a time-limited
+  claim recorded in the store) has expired, with an incomplete file and nothing
+  set to resume it;
+- every calling program keeps its own idea of what is downloading, so
+  restarting one clears its list while the partial files remain.
+
+`jobd` is a loop over a job store that collects finished delegated jobs, adopts
+jobs nobody is working on, and gives every program on the machine one answer to
+what is in flight.
+
+Part of [Open Abstractions](https://github.com/openabstractions/abstractions),
+the parent project, which holds the scope rules, the method, the measured
+results and the conformance suite.
+
+**Nothing requires it.** Point `ABSTRACTION_STORE` at an empty directory with no
+`jobd` running anywhere and a download through the layers still completes, in
+the calling process. Installing `jobd` adds the ability to finish work after an
+application closes; it is not a prerequisite for using the layers.
+
+## Install
+
+```
+go install github.com/openabstractions/service-jobd@v0.2.0
+```
+
+This builds a `service-jobd` binary. Rename or symlink it to `jobd` if you want
+the shorter name used below — the program does not read its own name.
+
+## Commands
+
+```
+jobd            same as jobd status
+jobd status     is a supervisor alive, and what does the store hold
+jobd start      launch a detached supervisor that outlives this shell
+jobd stop       stop the supervisor watching this store
+jobd run        supervise in the foreground until interrupted
+jobd once       one pass over the store, then exit
+jobd setup      record configuration every program on this machine will read
+jobd install    print the schtasks commands that register `jobd once`
+jobd uninstall  print the schtasks commands that remove them
+```
+
+- `jobd status [--exit-code]` lists every job, its state, and which tier (a
+  download mechanism such as BITS, or a network-attached-storage box running
+  its own `jobd`) is handling it. With the flag it exits 1 unless a supervisor
+  is alive, which suits a container healthcheck.
+- `jobd run [--interval 30s] [--without <system>]` reconciles delegated jobs,
+  delegates unclaimed jobs to a better tier when one is configured, adopts jobs
+  whose lease expired, and finalises jobs that finished transferring. Repeat
+  `--without` to exclude a delegation system: `--without nas --without bits`.
+- `jobd once [--quiet]` is what a scheduled task or cron job should run.
+  `--quiet` suppresses output when the pass found nothing to do, never errors.
+- `jobd start [--interval 30s] [--without <system>]` stops any supervisor
+  already watching this store, then launches a detached one — on Windows with
+  no attached console, elsewhere in its own session — writing its output to
+  `jobd.log` inside the store.
+- `jobd install` and `jobd uninstall` print commands and run nothing.
+
+A supervisor announces itself by writing a heartbeat, `supervisor.json`, into
+the job store, and every program reads that same file to decide whether one is
+alive. Both sides need only the store, so it works across a share as well as on
+one machine. [Design notes](https://github.com/openabstractions/abstractions/blob/main/docs/discovery-ipc.md).
+
+A text file dropped into `<store>/wanted/` is also a request: a URL per line,
+optionally `sha256:<hex>` and a destination inside the store. The folder answers
+by renaming the file `.accepted`, then `.done`, `.failed` or `.refused`.
+
+## Where it stores things
+
+By default `jobd` uses `~/.abstraction` on every operating system, including
+Windows and macOS — a home-directory dotfolder, applied unconditionally. See
+[Status](#status). Override it with the `ABSTRACTION_STORE` environment
+variable, or with `jobd setup --store <path>`, which writes it to a
+configuration file read by every program using
+[abstraction-config](https://github.com/openabstractions/abstraction-config),
+so a store move is told to one place. `jobd setup --show` prints the resolved
+configuration and which file it came from.
+
+Other variables: `MODELGET_STORE` (an older name, still honoured),
+`ABSTRACTION_NAS_STORE` (a store on a share watched by a `jobd` elsewhere, to
+which this one delegates), `ABSTRACTION_SHARED_STORE` (set when other machines
+write this store through a mount whose path does not say so).
+
+## Removing it
+
+1. `jobd stop`.
+2. If you registered a scheduled task, `jobd uninstall` prints the `schtasks`
+   commands that remove it.
+3. Delete the store directory — `~/.abstraction` unless you configured another.
+   That removes every job record, partial file and the heartbeat. Delete the
+   configuration file too if you ran `jobd setup`; `jobd setup --show` prints
+   its path.
+4. `go clean -i github.com/openabstractions/service-jobd`, or delete the binary
+   from `$(go env GOPATH)/bin`.
+
+## Status
+
+Experimental. The supervision loop — reconcile, delegate, adopt, deliver — runs,
+and has been exercised on Windows against both a BITS tier and a network-share
+tier. Where a tier is configured `jobd` hands the transfer to it; where none is,
+it performs the transfer itself.
+
+Known gaps:
+
+- **`jobd discover` does not exist in any build.** `discover.go` and
+  `discovery/` implement a local socket that answers `absent`, `present` or
+  `incompatible`, but nothing calls them: `jobd discover` falls through to usage
+  and exits 2, in `v0.2.0` and on `main`, and a running supervisor binds no
+  socket. Liveness is decided by the heartbeat file described above, which
+  cannot distinguish a killed supervisor from a live one until its timestamp
+  goes stale.
+- **The default store path is not platform-correct.** `~/.abstraction` is used
+  unmodified on Windows and macOS rather than a directory conventional there.
+- **`jobd install` and `jobd uninstall` always print Windows `schtasks`
+  commands**, whichever operating system they run on. On Linux or macOS run
+  `jobd once --quiet` from cron, a systemd timer or a launchd job instead.
+- **One user only.** A supervisor must run as the same user as the programs
+  that share its store. A service-account supervisor is not supported.
+- **The Windows installer package is `UNPROVEN`.** The release workflow's
+  verify job, which installs the MSI on a hosted runner and exercises the
+  installed binaries, has never run.
+
+## Requirements
+
+- Go 1.26 or later, to `go install` it.
+- Windows, Linux or macOS. `go build` succeeds for all three; the scheduled-task
+  convenience commands are Windows-only in practice — see Status.
+- [abstraction-download](https://github.com/openabstractions/abstraction-download)
+  at `go/v0.2.1`,
+  [abstraction-job](https://github.com/openabstractions/abstraction-job) at
+  `go/v0.2.0`, and
+  [abstraction-config](https://github.com/openabstractions/abstraction-config)
+  at `go/v0.1.1`.
+- [go-winio](https://github.com/Microsoft/go-winio) v0.6.2, for named pipes.
+  Windows has no named-pipe support in its standard library and no overlapped
+  I/O, without which a client reading from an unresponsive supervisor cannot
+  time out. It contributes nothing to a Linux or macOS build.
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE).
