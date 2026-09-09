@@ -37,7 +37,7 @@
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="StartMenuFolder" Name="Abstraction" />
+      <Directory Id="AbstractionMenuFolder" Name="Abstraction" />
     </StandardDirectory>
 
     <ComponentGroup Id="ServiceFiles" Directory="INSTALLFOLDER">
@@ -77,7 +77,7 @@
         <File Id="panel.exe.manifest" Name="Abstraction Panel.exe.manifest" Source="payload/Abstraction Panel.exe.manifest" KeyPath="yes" />
       </Component>
     </ComponentGroup>
-    <ComponentGroup Id="PanelShortcut" Directory="StartMenuFolder">
+    <ComponentGroup Id="PanelShortcut" Directory="AbstractionMenuFolder">
       <Component Id="PanelStartMenu" Guid="E5D9EA35-65C8-4930-9FC0-06120E9F39BE">
         <Shortcut Id="PanelShortcutFile" Name="Abstraction Panel"
                   Description="What this machine is doing with downloads, and what is holding the card"

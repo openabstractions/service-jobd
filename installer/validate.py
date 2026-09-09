@@ -1,5 +1,8 @@
+import argparse
 import re
+import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -53,7 +56,36 @@ def wxs_features(root):
     return groups, features
 
 
+def built(msi, wix, root, gated):
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "decompiled.wxs"
+        r = subprocess.run([wix, "msi", "decompile", str(msi), "-o", str(out)],
+                           capture_output=True, text=True)
+        if r.returncode:
+            return [f"{msi.name}: wix msi decompile failed: {r.stderr.strip() or r.stdout.strip()}"]
+        inside = {el.get("Id") for el in ET.parse(out).getroot().iter() if untag(el) == "File"}
+    want = {el.get("Id"): el.get("Source", "")[len("payload/"):]
+            for el in root.iter() if untag(el) == "File"}
+    bad = [f"{msi.name}: carries file {fid}, which abstraction.wxs does not install"
+           for fid in sorted(inside - set(want))]
+    for fid, path in want.items():
+        if fid in inside:
+            continue
+        if path in gated:
+            print(f"note  {msi.name} leaves out {path}, which has no publishable source")
+        else:
+            bad.append(f"{msi.name}: {path} is in abstraction.wxs and not in the package")
+    if not bad:
+        print(f"ok    {msi.name} carries {len(inside)} of the {len(want)} files abstraction.wxs installs")
+    return bad
+
+
 def main():
+    ap = argparse.ArgumentParser(description="Check installer/ against itself, and a built MSI against it.")
+    ap.add_argument("msi", nargs="*", type=Path, help="a built package to check as well")
+    ap.add_argument("--wix", default="wix", help="the wix executable, for reading an MSI")
+    a = ap.parse_args()
+
     bad = []
     wxs = HERE / "abstraction.wxs"
     text = wxs.read_text(encoding="utf-8")
@@ -132,7 +164,12 @@ def main():
         print(f"      {t}{'   (no publishable source yet)' if t in gated else ''}")
     print("      abstraction-x64.msi")
     print("      abstraction-arm64.msi")
-    return 0
+
+    for path in a.msi:
+        bad += built(path, a.wix, root, gated)
+    for line in bad:
+        print("FAIL ", line)
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
