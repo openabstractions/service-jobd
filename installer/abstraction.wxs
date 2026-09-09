@@ -105,9 +105,6 @@
         <File Id="abstraction_download.py" Source="payload/dev/python/download/abstraction_download.py" KeyPath="yes" />
       </Component>
       <Component Directory="DevPythonDownload">
-        <File Id="abstraction_discovery.py" Source="payload/dev/python/download/abstraction_discovery.py" KeyPath="yes" />
-      </Component>
-      <Component Directory="DevPythonDownload">
         <File Id="download.pyproject.toml" Name="pyproject.toml" Source="payload/dev/python/download/pyproject.toml" KeyPath="yes" />
       </Component>
       <?if $(var.Cpp) = yes ?>
