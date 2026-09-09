@@ -288,4 +288,7 @@ jobs:
                  ForEach-Object { $_.GetValue('DisplayName') } | Where-Object { $_ -eq 'Abstraction' }
           if ($arp) { $bad += 'it is still listed in Apps & features' }
           if ($bad) { $bad | ForEach-Object { "FAIL  $_" }; throw 'uninstall did not reverse everything' }
+          # schtasks exits 1 for a task that is absent, which is the state this
+          # step exists to confirm; pwsh would hand that on as the step's own result.
+          $global:LASTEXITCODE = 0
           'ok    nothing left: no files, no PATH entry, no tasks, no registry key, no ARP entry'
