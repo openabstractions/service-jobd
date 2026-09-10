@@ -103,7 +103,7 @@ func cmdStart(args []string) {
 	for _, w := range without {
 		childArgs = append(childArgs, "--without", w)
 	}
-	logPath := filepath.Join(storeRoot(), "jobd.log")
+	logPath := filepath.Join(storeRoot(), LogName)
 
 	got, err := download.StartSupervisor(download.Starting{
 		Endpoint: *endpoint, Exe: self, Args: childArgs, Log: logPath})

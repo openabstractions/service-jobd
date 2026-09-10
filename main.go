@@ -19,15 +19,33 @@
 // It is deliberately small: a loop over the job store, plus the two calls the
 // download layer already exposes. Everything hard lives below it.
 //
-// # Why a scheduled task rather than a Windows service
+// # Why a per-user service on Windows
 //
-// A real service means SCM plumbing and a dependency, and buys one thing over a
-// task: jobs owned by LocalSystem keep running while the user is logged off,
-// because that account "is always logged on". Under a normal user account BITS
-// still survives the application closing and a reboot — it suspends at logoff
-// and resumes at logon. For a desktop that is nearly the whole win, at no cost
-// and with no elevation. Install it as a SYSTEM task later if logged-off
-// transfers turn out to matter.
+// A scheduled task fires and exits, and nothing restarts it when it dies
+// mid-transfer. A per-user service is the facility that both starts at sign-in
+// and is restarted by the service manager when it fails, and it stores no
+// account and no password because it runs as whoever signed in. `jobd service
+// install` registers it and the installer's custom action is what calls that;
+// `jobd install` still prints the scheduled task, which is the fallback for an
+// account with no administrator token. VISION.md 2026-09-10 "Host S is
+// unnecessary" is the run that decided this.
+//
+// # Two images, one program
+//
+// A per-user service instance runs inside the interactive session, so the
+// loader gives a console image a console window at every sign-in — the
+// subsystem is a bit in the image header, and minimized by a shortcut is still
+// a taskbar button. That is why this package is linked twice. jobd.exe is the
+// console program a person types at; jobdw.exe is the same source linked
+// -H=windowsgui, and it is the image the service manager is given, because
+// service install registers jobdw.exe and refuses when it is not there. Which
+// build produces which image is the subsystem column of installer/payload.tsv.
+// Named the way the platform has named this pair since pythonw.exe and
+// javaw.exe.
+//
+// Nothing branches on which image is running. The one thing that differs is
+// that the windows-subsystem image has no standard output, and speakSomewhere
+// is where that is answered, for both.
 package main
 
 import (
@@ -44,6 +62,7 @@ import (
 )
 
 func main() {
+	speakSomewhere()
 	// Bare `jobd` answers the question somebody typing it is actually asking —
 	// is anything running, and what is it doing — rather than printing usage at
 	// them. Usage is still one keystroke away as `jobd help`.
@@ -70,6 +89,8 @@ func main() {
 		cmdStatus(os.Args[2:])
 	case "setup":
 		cmdSetup(os.Args[2:])
+	case "service":
+		cmdService(os.Args[2:])
 	case "discover":
 		cmdDiscover(os.Args[2:])
 	default:
@@ -89,6 +110,12 @@ func usage() {
   jobd once                    one pass, then exit (what a scheduled task runs)
   jobd install [--at-logon]    register a scheduled task, no elevation needed
   jobd uninstall               remove it
+  jobd service install         register the per-user service the installer
+                               registers: it starts in your session at sign-in
+                               and windows restarts it if it dies. Needs an
+                               administrator token
+  jobd service uninstall       remove it, and the per-session copies windows
+                               made of it
   jobd status [--exit-code]    what is in the store right now; with the flag,
                                exit 1 unless a supervisor is alive (a HEALTHCHECK)
   jobd discover                ask the supervisor over its bus who it is and who
@@ -96,6 +123,12 @@ func usage() {
   jobd setup --nas-store <p>   record what this machine has, once, so that every
                                application finds it without being configured
   jobd setup --show            what is configured, and which file said so
+
+on windows there is a second image:
+  jobdw.exe is this program with no console, which is what the installer starts
+  at logon so that nothing appears on the desktop. It takes the same commands
+  and prints nowhere a terminal can see: everything it says goes to jobd.log in
+  the store. Type jobd, not jobdw
 
 a window instead:
   the control panel (monitor) finds a NAS on the network, switches a tier off
@@ -328,8 +361,8 @@ const taskName = "jobd"
 
 // cmdInstall registers a scheduled task. No elevation: it runs as the current
 // user, which is enough for BITS to keep transferring across an application
-// exit and a reboot. Running as SYSTEM would additionally survive a logoff and
-// does need elevation — see the package comment.
+// exit and a reboot. It is the fallback for an account that cannot reach
+// `jobd service install`, which needs an administrator token.
 func cmdInstall(args []string) {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	atLogon := fs.Bool("at-logon", true, "also run at logon, not only on a timer")
