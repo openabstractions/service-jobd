@@ -352,6 +352,7 @@ func sweepErrors(err error) []error {
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	interval := fs.Duration("interval", 30*time.Second, "how often to sweep")
+	endpoint := fs.String("endpoint", download.DefaultEndpoint(), "where applications connect")
 	var without systems
 	fs.Var(&without, "without", `ignore a delegation system; repeatable, e.g. --without nas --without bits`)
 	need(fs, args)
@@ -384,16 +385,16 @@ func cmdRun(args []string) {
 	// learns the bus's name. Without one the supervisor is still a supervisor:
 	// it sweeps, and applications reach it through the store alone.
 	var looks <-chan struct{}
-	endpoint := ""
-	if bus, err := download.ListenBus(owner, func() string { return *serving.Load() }); err == nil {
+	announce := ""
+	if bus, err := download.ListenBus(*endpoint, owner, func() string { return *serving.Load() }); err == nil {
 		defer bus.Close()
-		looks, endpoint = bus.C(), bus.Endpoint
+		looks, announce = bus.C(), bus.Endpoint
 		l := identity.Ceiling()
-		fmt.Printf("jobd: listening at %s (%s/%s; callers bound by %s)\n", endpoint, l.Platform, l.Transport, firstSentence(l.Binding))
+		fmt.Printf("jobd: listening at %s (%s/%s; callers bound by %s)\n", announce, l.Platform, l.Transport, firstSentence(l.Binding))
 	} else {
 		fmt.Fprintf(os.Stderr, "jobd: no bus (%v); reachable through the store only, sweeping on the timer\n", err)
 	}
-	if err := download.Heartbeat(store, owner, tier, endpoint, *interval); err != nil {
+	if err := download.Heartbeat(store, owner, tier, announce, *interval); err != nil {
 		fmt.Fprintf(os.Stderr, "jobd: could not announce (%v); applications will download in-process\n", err)
 	}
 	// Stop announcing on a clean exit, so nothing hands work to a supervisor that
@@ -430,7 +431,7 @@ func cmdRun(args []string) {
 			case <-ctx.Done():
 				return
 			case <-beat.C:
-				download.Heartbeat(store, owner, *serving.Load(), endpoint, *interval)
+				download.Heartbeat(store, owner, *serving.Load(), announce, *interval)
 			}
 		}
 	}()
@@ -450,7 +451,7 @@ func cmdRun(args []string) {
 		// unless the answer changed.
 		if now := r.Rebind(); now != *serving.Load() {
 			serving.Store(&now)
-			download.Heartbeat(store, owner, now, endpoint, *interval)
+			download.Heartbeat(store, owner, now, announce, *interval)
 			fmt.Printf("%s  delegates-to=%s\n", time.Now().Format(time.RFC3339), now)
 		}
 		rec, del, ad, dlv, problems := pass(ctx, r)

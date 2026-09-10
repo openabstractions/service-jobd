@@ -1,7 +1,8 @@
 # service-jobd
 
-**In development.** Tagged `v0.2.0`, which predates `jobd discover` and the
-supervisor bus; the signed Windows installer is `UNPROVEN` — see Status.
+**In development. This repository carries no tag**, so there is no release to
+install: `go install` from a commit you have read, or build from a clone. The
+signed Windows installer is `UNPROVEN` — see Status.
 
 For someone running applications built on these abstractions: `jobd` is an
 optional supervisor process that finishes and tidies up jobs — downloads, today
@@ -159,12 +160,12 @@ Known gaps:
 - Go 1.26 or later, to `go install` it.
 - Windows, Linux or macOS. `go build` succeeds for all three; the scheduled-task
   convenience commands are Windows-only in practice — see Status.
-- [abstraction-download](https://github.com/openabstractions/abstraction-download)
-  at `go/v0.3.0`,
-  [abstraction-job](https://github.com/openabstractions/abstraction-job) at
-  `go/v0.3.0`, and
-  [abstraction-config](https://github.com/openabstractions/abstraction-config)
-  at `go/v0.2.0`.
+- [abstraction-download](https://github.com/openabstractions/abstraction-download),
+  [abstraction-job](https://github.com/openabstractions/abstraction-job) and
+  [abstraction-config](https://github.com/openabstractions/abstraction-config),
+  each at the exact version [`go.mod`](go.mod) pins. No version is repeated
+  here: `go.mod` is the file the build reads, and a second copy of it on a page
+  is a copy that goes stale without anything noticing.
 - [go-winio](https://github.com/Microsoft/go-winio) v0.6.2, for named pipes.
   Windows has no named-pipe support in its standard library and no overlapped
   I/O, without which a client reading from an unresponsive supervisor cannot

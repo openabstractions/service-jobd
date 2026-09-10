@@ -81,6 +81,7 @@ func cmdStop(args []string) {
 func cmdStart(args []string) {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	interval := fs.Duration("interval", 30*time.Second, "how often to sweep")
+	endpoint := fs.String("endpoint", download.DefaultEndpoint(), "where applications connect")
 	var without systems
 	fs.Var(&without, "without", `run one tier lower by ignoring a system; repeatable, e.g. --without nas --without bits`)
 	need(fs, args)
@@ -97,7 +98,7 @@ func cmdStart(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	childArgs := []string{"run", "--interval", interval.String()}
+	childArgs := []string{"run", "--interval", interval.String(), "--endpoint", *endpoint}
 	for _, w := range without {
 		childArgs = append(childArgs, "--without", w)
 	}
