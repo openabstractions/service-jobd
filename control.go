@@ -4,13 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	download "github.com/openabstractions/abstraction-download/go"
+	"github.com/openabstractions/abstraction-download/go/serve"
 	job "github.com/openabstractions/abstraction-job/go"
 )
 
@@ -77,22 +77,23 @@ func cmdStop(args []string) {
 	fmt.Printf("stopped %s\n", sup.Owner)
 }
 
-// cmdStart replaces whatever is running with a fresh detached supervisor.
+// cmdStart asks for a supervisor and says whether it made one.
+//
+// It used to stop whatever was running first and then sleep 300ms so the dying
+// process could let go of its handles. With a fixed endpoint that sleep became
+// load-bearing and wrong at once: the new supervisor asks for the name the old
+// one may still hold, and losing that race degrades it to no bus at all. The
+// answer is not a longer sleep. The endpoint admits one listener, so asking for
+// a supervisor when one is already there is answered by the one that is there —
+// `jobd stop` is still how you replace it, and a start no longer needs to know
+// whether it is the first.
 func cmdStart(args []string) {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	interval := fs.Duration("interval", 30*time.Second, "how often to sweep")
 	endpoint := fs.String("endpoint", download.DefaultEndpoint(), "where applications connect")
-	var without systems
+	var without serve.Systems
 	fs.Var(&without, "without", `run one tier lower by ignoring a system; repeatable, e.g. --without nas --without bits`)
 	need(fs, args)
-
-	_, store, _ := openRunner()
-	if _, live := download.SupervisorOf(store); live {
-		cmdStop(nil)
-		// Give the old process a moment to release its handles before the new
-		// one announces itself, so `jobd status` never shows two.
-		time.Sleep(300 * time.Millisecond)
-	}
 
 	self, err := os.Executable()
 	if err != nil {
@@ -102,38 +103,21 @@ func cmdStart(args []string) {
 	for _, w := range without {
 		childArgs = append(childArgs, "--without", w)
 	}
-
 	logPath := filepath.Join(storeRoot(), "jobd.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+
+	got, err := download.StartSupervisor(download.Starting{
+		Endpoint: *endpoint, Exe: self, Args: childArgs, Log: logPath})
 	if err != nil {
-		fatal(err)
+		fmt.Fprintf(os.Stderr, "jobd: %v. See %s\n", err, logPath)
+		os.Exit(1)
 	}
-	defer logFile.Close()
-
-	cmd := exec.Command(self, childArgs...)
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	cmd.SysProcAttr = detached()
-	if err := cmd.Start(); err != nil {
-		fatal(err)
+	if got.Already {
+		fmt.Printf("already running: %s at %s\n", got.Owner, got.Endpoint)
+		return
 	}
-	// Do not wait for it. Release it so this process can exit without leaving a
-	// zombie on unix.
-	_ = cmd.Process.Release()
-
-	// Wait for it to announce itself rather than printing success on the
-	// strength of having called exec. A supervisor that failed to start looks
-	// exactly like one that started, until somebody looks at the store.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if sup, live := download.SupervisorOf(store); live {
-			fmt.Printf("started %s\n", sup.Owner)
-			fmt.Printf("  store        %s\n", storeRoot())
-			fmt.Printf("  delegates to %s\n", sup.Tier)
-			fmt.Printf("  log          %s\n", logPath)
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	fmt.Fprintf(os.Stderr, "jobd: started, but it never announced itself. See %s\n", logPath)
-	os.Exit(1)
+	fmt.Printf("started %s\n", got.Owner)
+	fmt.Printf("  store        %s\n", storeRoot())
+	fmt.Printf("  listening at %s\n", got.Endpoint)
+	fmt.Printf("  delegates to %s\n", got.Tier)
+	fmt.Printf("  log          %s\n", got.Log)
 }

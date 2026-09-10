@@ -8,13 +8,14 @@ import (
 	"time"
 
 	download "github.com/openabstractions/abstraction-download/go"
+	"github.com/openabstractions/abstraction-download/go/serve"
 	job "github.com/openabstractions/abstraction-job/go"
 )
 
-func runFlags() (*flag.FlagSet, *time.Duration, *systems) {
+func runFlags() (*flag.FlagSet, *time.Duration, *serve.Systems) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	d := fs.Duration("interval", 30*time.Second, "how often to sweep")
-	var w systems
+	var w serve.Systems
 	fs.Var(&w, "without", "ignore a delegation system")
 	return fs, d, &w
 }
