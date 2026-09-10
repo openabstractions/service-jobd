@@ -110,7 +110,12 @@ jobs:
           case "$ref" in [0-9]*.[0-9]*.[0-9]*) version=$ref ;; *) version=0.0.0 ;; esac
           panel=$(gate 'Abstraction Panel.exe')
           cpp=$(gate 'dev/include/abstraction/download/over_curl.hpp')
-          printf 'version %s   panel %s   c++ headers %s\n' "$version" "$panel" "$cpp"
+          # This build checks its sources out, so the Python rows are staged and
+          # Dev is yes here. redist assembles out of published module versions
+          # and cannot reach them, which is why abstraction.wxs gates them at all.
+          dev=$(gate 'dev/python/job/abstraction_job.py')
+          printf 'version %s   panel %s   python %s   c++ headers %s\n' \
+            "$version" "$panel" "$dev" "$cpp"
 
           wix extension add -g "WixToolset.UI.wixext/$WIX_VERSION"
           python3 installer/mklicense.py LICENSE license.rtf
@@ -132,7 +137,7 @@ jobs:
 
             for pass in a b; do
               wix build -arch "$arch" -bindpath "$root" \
-                -d Version="$version" -d Panel="$panel" -d Cpp="$cpp" \
+                -d Version="$version" -d Panel="$panel" -d Dev="$dev" -d Cpp="$cpp" \
                 -ext WixToolset.UI.wixext \
                 -o "$pass/abstraction-$arch.msi" installer/abstraction.wxs
             done
