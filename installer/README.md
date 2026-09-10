@@ -6,15 +6,19 @@ features, the shape .NET and Git for Windows already use:
 
 | feature | default | what it is |
 |---|---|---|
-| Background service | on, cannot be unticked | `jobd`, and the two scheduled tasks that run it |
+| Background service | on, cannot be unticked | `jobd`, and the scheduled task that runs it every five minutes |
 | Command-line tools and panel | on | `dl`, `jobctl`, the panel, and this folder on `PATH` |
 | Developer files | off | headers, the Python packages, the Go module paths |
 
 The package is **per-user**: it installs into `%LOCALAPPDATA%\Programs\Abstraction`,
-asks for no administrator, and registers its scheduled tasks as the person who
-ran it. That is not a preference. `schtasks` registering a logon task for
-*another* account needs that account's password, and this package will never
-ask for one.
+asks for no administrator, and registers its scheduled task as the person who
+ran it. That is not a preference, and it is what decides the task shape.
+`schtasks /create /sc onlogon` with no `/ru` registers a trigger for every
+account on the machine, which an unelevated install may not do; naming an
+account with `/ru` makes `schtasks` ask for that account's password, and a
+`/qn` install has no console to answer with. So there is one task, the
+five-minute sweep, which needs neither and picks up unfinished work within five
+minutes of logon.
 
 ## Install
 
@@ -67,29 +71,29 @@ cannot gate away.
   `payload.tsv` name `UNRESOLVED`, the workflow leaves them out and says so, and
   `abstraction.wxs` gates them on `$(var.Panel)` and `$(var.Cpp)`. Somebody has
   to decide which repository publishes them.
-- **One package has been installed, once**, by the `verify` job of the release
-  workflow — run 34364113642, 2026-09-09. It installed; its files, `PATH` entry,
-  two scheduled tasks and registry key were all in place; and `dl` fetched a file
-  with no supervisor running. `jobctl` then refused, because it demanded
-  `JOB_STORE` while `dl` discovered the store. Fixed since: `jobctl` resolves a
-  root the way `dl` and `jobd` do, and the step now requires it to name the
-  record `dl` just wrote rather than merely to exit 0.
-- **Nothing has ever uninstalled this package.** The run above stopped at the
-  first failure, so `uninstall` and `what it left behind` have still never
-  executed. Two things could go wrong there and no evidence says otherwise: the
-  five-minute sweep task holding `jobd.exe` open while `msiexec /x` deletes it,
-  and `HKCU\Software\OpenAbstractions` surviving as an empty parent key —
-  `RemoveRegistryKey` in `abstraction.wxs` is meant to prevent the second and has
-  never been observed doing it.
+- **A hosted runner is an administrator and a person is not.** The one CI run
+  that installed this package — run 34364113642, 2026-09-09 — registered a
+  logon task that an unelevated account cannot register at all. Measured
+  2026-09-10 on a developer workstation, `research/dist189/RESULTS.md`: the same
+  package fails `1603` for a normal user, and every green tick in that job was
+  over a privilege the buyer does not have. Anything the `verify` job asserts is
+  asserted as an administrator, and that is the one thing it cannot test.
+- **Install and uninstall have been observed once each, off CI**, into a scratch
+  prefix with `INSTALLFOLDER=`, on the package this directory builds today.
+  Uninstall left no file, no registry key, no `PATH` entry, no task and no
+  Apps & features row; the two fears recorded here before — the sweep task
+  holding `jobd.exe` open, and `HKCU\Software\OpenAbstractions` surviving as an
+  empty parent — did not happen. Neither has been observed while the sweep was
+  actually mid-run.
 - **Two builds of one version install alongside each other.** `abstraction.wxs`
   sets no `ProductCode`, so WiX generates one per build, and `MajorUpgrade`
   without `AllowSameVersionUpgrades` will not see the first install. The
   tag-driven workflow builds each version once and never hits this; anyone
   building locally twice does.
 - **`jobd install` prints its `schtasks` lines rather than running them**, so the
-  package registers the two tasks itself and the task shape now has two owners.
-  Nothing compares them, and the two owners use the same two task names, so an
-  uninstall deletes tasks a person registered by hand.
+  task shape has two owners and nothing compares them. Its logon line is the one
+  this package had to drop, unchanged and untested: pasted into an unelevated
+  shell it is the command that exits 1 here.
 - **The Tools feature's title and description promise a panel** that is gated out
   and has no publishable source.
 - **`sources.tsv` is behind the published tags.** Both pins resolve, neither is a

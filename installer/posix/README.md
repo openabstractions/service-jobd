@@ -125,85 +125,14 @@ not claimed to be; `pkgbuild` writes a bom and a payload archive of its own.
 `--platform macos` needs `lipo`, `pkgbuild` and `productbuild`, and refuses by
 name on a machine that has none of them rather than skipping the package.
 
-## Signing — what the owner has to produce
+## Signing
 
 **Nothing here is signed.** The tarball says so on its last line, the macOS
-welcome and conclusion panes say so, and the release notes say so. Signing is a
-separate step and it needs material only the owner can produce.
+welcome and conclusion panes say so, and the release notes say so.
 
-### macOS, in this order
-
-1. **`Developer ID Application: Reinis Lusis (2U744DSR8L)`, exported as a
-   `.p12`.** In Keychain Access, select the certificate *and* its private key,
-   File → Export Items, format Personal Information Exchange. Give it a
-   passphrase. Then `base64 -i cert.p12 | pbcopy`.
-   - repository secret `MACOS_CERTIFICATE` — that base64 text
-   - repository secret `MACOS_CERTIFICATE_PASSWORD` — the passphrase you chose
-
-   What it is for: the workflow writes it back to a file, creates a **temporary**
-   keychain for that one run, imports it, signs, and deletes the keychain. It is
-   never added to a keychain on any of your machines.
-
-2. **The team identifier.** `2U744DSR8L`, from the certificate name.
-   - repository secret `MACOS_TEAM_ID`
-
-   What it is for: `notarytool` needs it, and `codesign` uses it to pick the
-   identity when the temporary keychain holds more than one.
-
-3. **An App Store Connect API key**, at appstoreconnect.apple.com → Users and
-   Access → Integrations → App Store Connect API. Create a key with the
-   **Developer** role. You can download the `.p8` **once**; the page shows the
-   Key ID beside it and the Issuer ID above the list.
-   - repository secret `APPLE_API_KEY_ID` — the 10-character Key ID
-   - repository secret `APPLE_API_ISSUER_ID` — the issuer UUID
-   - repository secret `APPLE_API_KEY_P8` — the whole contents of the `.p8`,
-     including its first and last armour lines
-
-   What it is for: `xcrun notarytool submit --key … --key-id … --issuer …`
-   uploads the signed package to Apple, which scans it and issues a ticket.
-   An API key is used rather than an Apple ID and app-specific password because
-   it carries no account password and can be revoked on its own.
-
-   Why an App Store Connect key and not the Developer ID certificate again:
-   they are different things. The certificate proves who built it; notarisation
-   is Apple telling every Mac that it has seen this exact file and found no
-   malware. Without the ticket, Gatekeeper on a machine that downloaded the file
-   from a browser refuses to open it, signed or not.
-
-4. Nothing else. There is no macOS *installer* certificate here — `productsign`
-   wants `Developer ID Installer`, which is a **second** certificate on the same
-   account. Create it at developer.apple.com → Certificates → `+` → Developer ID
-   Installer, download it, install it in Keychain Access, and export it the same
-   way as step 1.
-   - repository secret `MACOS_INSTALLER_CERTIFICATE`
-   - repository secret `MACOS_INSTALLER_CERTIFICATE_PASSWORD`
-
-   What it is for: a `.pkg` is signed with the Installer identity, not the
-   Application one. The three programs inside it are signed with the Application
-   identity from step 1. Both are needed; a `.pkg` signed with the Application
-   certificate is rejected.
-
-   **Until this exists, the macOS package cannot be signed at all**, and the
-   Developer ID Application certificate on its own is not enough.
-
-Order matters only in that 4 is a different certificate from 1 and people
-routinely believe it is the same one.
-
-### Linux
-
-Nothing to buy and nothing to install. There is no Gatekeeper and no
-SmartScreen. What a Linux user checks is the SHA-256 published beside the
-tarball, which the release already carries.
-
-The optional step, when there is something to say about who built it, is a
-detached OpenPGP signature per asset (`.tar.gz.asc`) and a published fingerprint.
-That needs one secret, `GPG_PRIVATE_KEY`, an ASCII-armoured export, plus
-`GPG_PASSPHRASE`. It is worth doing only once the public key lives somewhere a
-stranger can find it independently of the release page.
-
-### Windows
-
-Still no certificate. Unchanged by anything here.
+Signing needs material only the project owner can produce, and what he has to
+produce is not a stranger's business: it names a certificate, a person and a
+team identifier. It is kept in the private tree.
 
 ## What may break
 

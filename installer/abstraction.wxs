@@ -116,7 +116,7 @@
 
     <Feature Id="Service" Level="1" AllowAbsent="no" AllowAdvertise="no"
              Title="Background service"
-             Description="Finishes transfers after the program that started them has closed. Registers two scheduled tasks for you, and needs no administrator.">
+             Description="Finishes transfers after the program that started them has closed. Registers one scheduled task for you, every five minutes, and needs no administrator.">
       <ComponentGroupRef Id="ServiceFiles" />
     </Feature>
 
@@ -138,28 +138,28 @@
 
     <!-- schtasks and not a service: BITS keeps transferring across an application
          exit and a reboot under a normal user account, so nothing here needs
-         elevation. The scope is perUser for the same reason - registering a logon
-         task for another account is what needs that account's password, and this
-         package never asks for one. -->
-    <CustomAction Id="TaskCreateLogon" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="check"
-                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /create /tn jobd-logon /sc onlogon /tr &quot;\&quot;[#jobd.exe]\&quot; once --quiet&quot; /f" />
-    <CustomAction Id="TaskRollbackLogon" Directory="INSTALLFOLDER" Execute="rollback" Impersonate="yes" Return="ignore"
-                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /delete /tn jobd-logon /f" />
+         elevation, and the scope is perUser for the same reason.
+
+         One sweep task and no logon task, because a logon task cannot be
+         registered by an install that does not ask for a password or for
+         administrator rights. `schtasks /create /sc onlogon` with no /ru
+         registers a trigger that fires for every account on the machine, which
+         is an administrator's change: unelevated it exits 1 and the package
+         fails 1722, then 1603. Naming the account with /ru makes schtasks ask
+         for that account's password, and a silent install has no console to
+         answer with, so it blocks for ever - with /rp "" and with /it alike.
+         The sweep picks up unfinished work within five minutes of logon and
+         needs none of that. -->
     <CustomAction Id="TaskCreateSweep" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="check"
                   ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /create /tn jobd /sc minute /mo 5 /tr &quot;\&quot;[#jobd.exe]\&quot; once --quiet&quot; /f" />
     <CustomAction Id="TaskRollbackSweep" Directory="INSTALLFOLDER" Execute="rollback" Impersonate="yes" Return="ignore"
                   ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /delete /tn jobd /f" />
-    <CustomAction Id="TaskDeleteLogon" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="ignore"
-                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /delete /tn jobd-logon /f" />
     <CustomAction Id="TaskDeleteSweep" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="yes" Return="ignore"
                   ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /delete /tn jobd /f" />
 
     <InstallExecuteSequence>
-      <Custom Action="TaskDeleteLogon" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
-      <Custom Action="TaskDeleteSweep" After="TaskDeleteLogon" Condition="REMOVE=&quot;ALL&quot;" />
-      <Custom Action="TaskRollbackLogon" After="InstallFiles" Condition="&amp;Service=3" />
-      <Custom Action="TaskCreateLogon" After="TaskRollbackLogon" Condition="&amp;Service=3" />
-      <Custom Action="TaskRollbackSweep" After="TaskCreateLogon" Condition="&amp;Service=3" />
+      <Custom Action="TaskDeleteSweep" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="TaskRollbackSweep" After="InstallFiles" Condition="&amp;Service=3" />
       <Custom Action="TaskCreateSweep" After="TaskRollbackSweep" Condition="&amp;Service=3" />
     </InstallExecuteSequence>
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ARCHES = {"amd64", "arm64"}
-KINDS = {"gobuild", "copy", "authored", "generated"}
+KINDS = {"gobuild", "copy", "authored", "generated", "license"}
 
 
 def rows(name):
@@ -24,6 +24,16 @@ def rows(name):
 
 def sources():
     return {r[0]: (r[1], r[2], r[3]) for r in rows("sources.tsv")}
+
+
+# This file is two directories below the root in the tree it is written in and
+# one below it in the repository it publishes into, so the depth is discovered
+# rather than counted.
+def nearest_license():
+    for d in HERE.parents:
+        if (d / "LICENSE").is_file():
+            return d / "LICENSE"
+    return HERE / "LICENSE"
 
 
 def payload(platform):
@@ -57,16 +67,22 @@ def gobuild(pkgdir, dst, goos, goarch):
                         "GOARCH": goarch, "GOFLAGS": "-trimpath"})
 
 
-def stage(items, src, root, goos, goarch, programs=True):
+def stage(items, src, root, goos, goarch, programs=True, prebuilt=None, license=None):
     files = []
     for path, kind, source, frm, mode in items:
         dst = root / path
         dst.parent.mkdir(parents=True, exist_ok=True)
         if kind == "gobuild":
-            if programs:
+            if not programs:
+                pass
+            elif prebuilt is not None:
+                shutil.copyfile(prebuilt / Path(path).name, dst)
+            else:
                 gobuild(src[source] / frm, dst, goos, goarch)
         elif kind == "generated":
             dst.write_bytes(b"")
+        elif kind == "license":
+            dst.write_bytes(license.read_bytes().replace(b"\r\n", b"\n"))
         else:
             # Every non-program file here is text, and a build on Windows would
             # otherwise put CRLF into a shell script that a shell then refuses.
@@ -163,7 +179,17 @@ def main():
     ap.add_argument("--version", default="0.0.0")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--src", action="append", default=[], metavar="ID=DIR",
-                    help="where the sources.tsv source ID is checked out")
+                    help="where the sources.tsv source ID is checked out; "
+                         "a source not given here has its rows left out, and "
+                         "each one is named")
+    ap.add_argument("--bin", type=Path, metavar="DIR",
+                    help="take the programs from DIR instead of building them, "
+                         "for a package assembled out of published module "
+                         "versions rather than out of checkouts; on macOS they "
+                         "must already be universal, because lipo is what joins "
+                         "two thin builds and this route does not run it")
+    ap.add_argument("--license", type=Path, default=nearest_license(),
+                    help="the LICENSE the package installs")
     a = ap.parse_args()
 
     want = sources()
@@ -174,10 +200,21 @@ def main():
             sys.exit(f"FAIL  --src {sid} is not a source in sources.tsv")
         src[sid] = Path(d).resolve()
 
+    if not a.license.is_file():
+        sys.exit(f"FAIL  --license {a.license} is not a file, and the package installs one")
+
     items = payload(a.platform)
-    missing = sorted({s for _, k, s, _, _ in items if s != "posix" and s not in src} )
-    if missing:
-        sys.exit(f"FAIL  no --src for {', '.join(missing)}; these packages gate nothing away")
+    have = lambda kind, source: (source == "posix" or kind == "license"
+                                 or (kind == "gobuild" and a.bin is not None)
+                                 or source in src)
+    unbuildable = [p for p, k, s, _, _ in items if k == "gobuild" and not have(k, s)]
+    if unbuildable:
+        sys.exit(f"FAIL  no --src and no --bin for {', '.join(unbuildable)}; "
+                 f"a package that installs no program is not this package")
+    for path, kind, source, _, _ in items:
+        if not have(kind, source):
+            print(f"note  {path} left out: no --src {source}")
+    items = [it for it in items if have(it[1], it[2])]
     pinned(src, want)
 
     a.out.mkdir(parents=True, exist_ok=True)
@@ -189,18 +226,24 @@ def main():
     if a.platform == "linux":
         if a.arch not in ARCHES:
             sys.exit("FAIL  --arch amd64 or arm64 is required for linux")
-        files = stage(items, src, root, "linux", a.arch)
+        files = stage(items, src, root, "linux", a.arch, prebuilt=a.bin, license=a.license)
         top = f"abstraction-{a.version}-linux-{a.arch}"
         out = tarball(root, files, a.out / f"{top}.tar.gz", top)
     else:
-        needs("lipo", "pkgbuild", "productbuild")
-        thin = []
-        for arch in sorted(ARCHES):
-            d = work / f"thin-{arch}"
-            stage(items, src, d, "darwin", arch)
-            thin.append(d)
-        files = stage(items, src, root, "darwin", "arm64", programs=False)
-        lipo(thin, root, items)
+        needs("pkgbuild", "productbuild")
+        if a.bin:
+            files = stage(items, src, root, "darwin", "arm64",
+                          prebuilt=a.bin, license=a.license)
+        else:
+            needs("lipo")
+            thin = []
+            for arch in sorted(ARCHES):
+                d = work / f"thin-{arch}"
+                stage(items, src, d, "darwin", arch, license=a.license)
+                thin.append(d)
+            files = stage(items, src, root, "darwin", "arm64",
+                          programs=False, license=a.license)
+            lipo(thin, root, items)
         out = pkg(root, files, a.out / f"abstraction-{a.version}-macos-universal.pkg",
                   a.version, work)
 
