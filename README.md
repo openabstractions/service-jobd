@@ -151,9 +151,10 @@ Known gaps:
   `jobd once --quiet` from cron, a systemd timer or a launchd job instead.
 - **One user only.** A supervisor must run as the same user as the programs
   that share its store. A service-account supervisor is not supported.
-- **The Windows installer package is `UNPROVEN`.** The release workflow's
-  verify job, which installs the MSI on a hosted runner and exercises the
-  installed binaries, has never run.
+- **Installer packages are released by [redist](https://github.com/openabstractions/redist).**
+  Its workflow builds and verifies the suite before creating a new installer
+  version tag. This repository's Go supervisor tags do not identify installer
+  releases; consult the redist run for its installation and signing evidence.
 
 ## Requirements
 

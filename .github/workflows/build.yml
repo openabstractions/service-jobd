@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GOWORK: 'off'
+
+jobs:
+  go:
+    name: go (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: locate public module
+        id: module
+        run: |
+          if [ -f go.mod ]; then dir=.; elif [ -f go/go.mod ]; then dir=go
+          else echo 'FAIL no public Go module'; exit 1; fi
+          printf 'dir=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: ${{ steps.module.outputs.dir }}/go.mod
+          cache: false
+      - name: build and test
+        working-directory: ${{ steps.module.outputs.dir }}
+        run: |
+          go version
+          test "$(go env GOWORK)" = off
+          go build -mod=readonly ./...
+          n=$(go list -mod=readonly -f '{{if or .TestGoFiles .XTestGoFiles}}x{{end}}' ./... | grep -c x || true)
+          go test -mod=readonly -count=1 -timeout=5m ./...
+          printf '%s: public module built; %s packages have tests; GOWORK=off, pinned dependencies only\n' "$RUNNER_OS" "$n" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$n" -eq 0 ]; then
+            echo 'No tests exist in this module; this result proves compilation only.' >> "$GITHUB_STEP_SUMMARY"
+          fi
