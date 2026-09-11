@@ -58,7 +58,7 @@ func parse(fs *flag.FlagSet, args []string, want ...string) ([]string, error) {
 
 // need parses or ends the process. A command line this tool will not act on
 // exits 2 — nothing was attempted, which is a different thing for a script to
-// know than a sweep that could not finish. See download/CONTRACT.md
+// know than a sweep that could not finish. See abstraction-download/CONTRACT.md
 // § What a status byte can carry.
 func need(fs *flag.FlagSet, args []string, want ...string) []string {
 	pos, err := parse(fs, args, want...)
@@ -76,7 +76,7 @@ func need(fs *flag.FlagSet, args []string, want ...string) []string {
 // status is the class of a failure as a number a shell can branch on.
 //
 // The class comes from the error itself — a list kept here would be the second
-// place to update, which is the defect [DL-E3] names. download/CONTRACT.md
+// place to update, which is the defect [DL-E3] names. abstraction-download/CONTRACT.md
 // § What a status byte can carry says what each number means.
 func status(err error) int {
 	switch {

@@ -161,7 +161,7 @@ func fatal(err error) {
 
 // storeRoot and openRunner are the library's, wrapped so this tool keeps
 // ending the process on a store it cannot open. Everything about how a store is
-// found lives in download/go/serve, because the supervisor and this tool must
+// found lives in abstraction-download/go/serve, because the supervisor and this tool must
 // not be able to disagree about it.
 func storeRoot() string {
 	root, err := serve.StoreRoot()

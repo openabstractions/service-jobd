@@ -135,10 +135,10 @@ func serviceInstall() error {
 	return nil
 }
 
-// setRecovery is the restart this mechanism was chosen for. The SCM performs
-// actions[N-1] on the Nth failure and then stops, so the reset period is what
-// makes three actions a crash-loop brake rather than a budget of three restarts
-// for the life of the machine.
+// setRecovery configures restart delays of 3s, 10s, then 30s. The documented SCM
+// policy repeats the final action on subsequent failures; this list sets no
+// three-restart limit. The failure count resets after an hour without failures.
+// See https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actionsw
 func setRecovery(h windows.Handle) error {
 	s := &mgr.Service{Name: serviceName, Handle: h}
 	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
