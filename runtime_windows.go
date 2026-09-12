@@ -68,6 +68,10 @@ func runServiceWork(ctx context.Context, flags []string, withRuntime bool,
 
 // Readiness precedes the worker's bus becoming visible to start callers.
 func runWithRuntime(ctx context.Context, args []string) error {
+	return withSessionShutdown(ctx, func(ctx context.Context) error { return runRuntimeAndWorker(ctx, args) })
+}
+
+func runRuntimeAndWorker(ctx context.Context, args []string) error {
 	return runReadyRuntime(ctx, args, serve.JobsContext, func(ctx context.Context) (func() error, func() error, error) {
 		host, err := runtimehost.Start(ctx, runtimehost.Options{ShutdownTimeout: 5 * time.Second, ForceTimeout: 2 * time.Second})
 		if err != nil {
