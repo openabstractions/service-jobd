@@ -53,3 +53,25 @@ jobs:
           if [ "$n" -eq 0 ]; then
             echo 'No tests exist in this module; this result proves compilation only.' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  facade-protocol:
+    if: github.event.repository.name == 'abstraction-facade'
+    name: C++ resolver protocol (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: install and consume resolver protocol
+        run: |
+          cmake -S cpp -B "$RUNNER_TEMP/protocol-build" \
+            -DABSTRACTION_FACADE_BUILD_AGGREGATE=OFF \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/protocol-install"
+          cmake --install "$RUNNER_TEMP/protocol-build" --config Release
+          cmake -S cpp/test/protocol -B "$RUNNER_TEMP/protocol-consumer" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/protocol-install"
+          cmake --build "$RUNNER_TEMP/protocol-consumer" --config Release
+          ctest --test-dir "$RUNNER_TEMP/protocol-consumer" -C Release --output-on-failure

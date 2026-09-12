@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/openabstractions/abstraction-config/go v0.3.0
-	github.com/openabstractions/abstraction-download/go v0.4.2-0.20260911172954-807f9a7a9071
+	github.com/openabstractions/abstraction-download/go v0.4.3-0.20260912090551-58e636d58338
 	github.com/openabstractions/abstraction-job/go v0.4.2-0.20260911170039-843094934520
 	golang.org/x/sys v0.47.0
 )

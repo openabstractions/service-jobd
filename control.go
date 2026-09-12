@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -89,6 +90,7 @@ func cmdStop(args []string) {
 // whether it is the first.
 func cmdStart(args []string) {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	withRuntime := fs.Bool("runtime", false, "require the installed sibling runtime")
 	interval := fs.Duration("interval", 30*time.Second, "how often to sweep")
 	endpoint := fs.String("endpoint", download.DefaultEndpoint(), "where applications connect")
 	var without serve.Systems
@@ -99,17 +101,25 @@ func cmdStart(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	childArgs := []string{"run", "--interval", interval.String(), "--endpoint", *endpoint}
+	childArgs := []string{"run"}
+	if *withRuntime {
+		childArgs = append(childArgs, "--runtime")
+	}
+	childArgs = append(childArgs, "--interval", interval.String(), "--endpoint", *endpoint)
 	for _, w := range without {
 		childArgs = append(childArgs, "--without", w)
 	}
 	logPath := filepath.Join(storeRoot(), LogName)
 
-	got, err := download.StartSupervisor(download.Starting{
-		Endpoint: *endpoint, Exe: self, Args: childArgs, Log: logPath})
+	got, err := startWithRuntime(context.Background(), download.Starting{
+		Endpoint: *endpoint, Exe: self, Args: childArgs, Log: logPath}, *withRuntime, download.StartSupervisor, checkRuntimeAvailable)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "jobd: %v. See %s\n", err, logPath)
 		os.Exit(1)
+	}
+	if *withRuntime {
+		fmt.Printf("supervisor and runtime available at %s\n", got.Endpoint)
+		return
 	}
 	if got.Already {
 		fmt.Printf("already running: %s at %s\n", got.Owner, got.Endpoint)
@@ -120,4 +130,23 @@ func cmdStart(args []string) {
 	fmt.Printf("  listening at %s\n", got.Endpoint)
 	fmt.Printf("  delegates to %s\n", got.Tier)
 	fmt.Printf("  log          %s\n", got.Log)
+}
+
+// A bus response establishes supervisor availability. Runtime readiness is a
+// separate capability check and does not establish ownership of that process.
+func startWithRuntime(ctx context.Context, options download.Starting, required bool,
+	start func(download.Starting) (download.Started, error), check func(context.Context) error) (download.Started, error) {
+	if required {
+		options.Within = 20 * time.Second
+	}
+	got, err := start(options)
+	if err != nil {
+		return got, err
+	}
+	if required {
+		if err := check(ctx); err != nil {
+			return got, fmt.Errorf("supervisor answered; runtime availability failed: %w", err)
+		}
+	}
+	return got, nil
 }

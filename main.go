@@ -53,7 +53,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/openabstractions/abstraction-download/go"
@@ -103,17 +105,18 @@ func usage() {
 	fmt.Println(`jobd — finishes transfers nobody is watching
 
   jobd                         is one running, and what is it doing
-  jobd start [--without nas]   make sure a detached supervisor is running; if one
+  jobd start [--runtime] [--without nas]   make sure a detached supervisor is running; if one
                                already answers, say so and leave it alone
   jobd stop                    stop the one watching this store
-  jobd run [--interval 30s]    supervise in the foreground until stopped
+  jobd run [--runtime] [--interval 30s]    supervise in the foreground until stopped
   jobd once                    one pass, then exit (what a scheduled task runs)
   jobd install [--at-logon]    register a scheduled task, no elevation needed
   jobd uninstall               remove it
-  jobd service install         register the per-user service the installer
+  jobd service install [--runtime] register the per-user service the installer
                                registers: it starts in your session at sign-in
                                and windows restarts it if it dies. Needs an
-                               administrator token
+                               administrator token; --runtime also supervises
+                               the installed sibling runtime (logging/config)
   jobd service uninstall       remove it, and the per-session copies windows
                                made of it
   jobd status [--exit-code]    what is in the store right now; with the flag,
@@ -226,9 +229,18 @@ func sweepErrors(err error) []error {
 // answers `openabstractions serve jobd`, so the two can never drift into two
 // supervisors that behave differently.
 func cmdRun(args []string) {
-	if err := serve.Jobs(args); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runCommand(ctx, args); err != nil {
 		fatal(err)
 	}
+}
+
+func runCommand(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "--runtime" {
+		return runWithRuntime(ctx, args[1:])
+	}
+	return serve.JobsContext(ctx, args)
 }
 
 func cmdStatus(args []string) {

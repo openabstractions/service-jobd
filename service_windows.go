@@ -37,21 +37,18 @@ const (
 )
 
 func cmdService(args []string) {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "jobd: service install|uninstall|run")
+	command, withRuntime, err := serviceArguments(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "jobd:", err)
 		os.Exit(2)
 	}
-	var err error
-	switch args[0] {
+	switch command {
 	case "install":
-		err = serviceInstall()
+		err = serviceInstall(withRuntime)
 	case "uninstall":
 		err = serviceUninstall()
 	case "run":
-		err = serviceRun()
-	default:
-		fmt.Fprintln(os.Stderr, "jobd: service install|uninstall|run")
-		os.Exit(2)
+		err = serviceRun(withRuntime)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "jobd:", err)
@@ -81,7 +78,7 @@ func windowlessImage() (string, error) {
 	return w, nil
 }
 
-func serviceInstall() error {
+func serviceInstall(withRuntime bool) error {
 	exe, err := windowlessImage()
 	if err != nil {
 		return err
@@ -100,7 +97,7 @@ func serviceInstall() error {
 	if err != nil {
 		return err
 	}
-	bin, err := windows.UTF16PtrFromString(windows.EscapeArg(exe) + " service run")
+	bin, err := windows.UTF16PtrFromString(serviceCommand(exe, withRuntime))
 	if err != nil {
 		return err
 	}
@@ -260,17 +257,21 @@ func deleteService(m windows.Handle, name string) (bool, error) {
 // parent process, and a heuristic that guesses wrong here would skip the
 // dispatcher on the one path that must not skip it; guessing wrong about the
 // wording of an error costs nothing.
-func serviceRun() error {
-	err := svc.Run(serviceName, supervisor{})
+func serviceRun(withRuntime bool) error {
+	err := svc.Run(serviceName, supervisor{withRuntime: withRuntime})
 	if errors.Is(err, windows.ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
 		return errors.New("`service run` is how the service manager starts this; `jobd run` is how you supervise here")
 	}
 	return err
 }
 
-type supervisor struct{}
+type supervisor struct {
+	withRuntime bool
+	jobs        func(context.Context, []string) error
+	runtime     func(context.Context) error
+}
 
-func (supervisor) Execute(scmArgs []string, r <-chan svc.ChangeRequest, s chan<- svc.Status) (bool, uint32) {
+func (h supervisor) Execute(scmArgs []string, r <-chan svc.ChangeRequest, s chan<- svc.Status) (bool, uint32) {
 	// scmArgs[0] is the service name; anything after it is what StartService was
 	// given, which is the flag vector `jobd run` takes.
 	flags := scmArgs
@@ -283,7 +284,15 @@ func (supervisor) Execute(scmArgs []string, r <-chan svc.ChangeRequest, s chan<-
 	defer stop()
 
 	done := make(chan error, 1)
-	go func() { done <- serve.JobsContext(ctx, flags) }()
+	jobs := h.jobs
+	if jobs == nil {
+		jobs = serve.JobsContext
+	}
+	runtime := h.runtime
+	if runtime == nil {
+		runtime = runRuntime
+	}
+	go func() { done <- runServiceWork(ctx, flags, h.withRuntime, jobs, runtime) }()
 
 	// Running is reported before the store is open and the bus is listening,
 	// which is deliberate. Taking longer than ServicesPipeTimeout to say it is a
@@ -326,4 +335,28 @@ func failed(err error) (bool, uint32) {
 		return true, 1
 	}
 	return false, 0
+}
+
+// The registered binary arguments arrive through os.Args. scmArgs contains only
+// the separate StartService argument vector, which remains download flags.
+func serviceArguments(args []string) (string, bool, error) {
+	if len(args) >= 1 && len(args) <= 2 {
+		command := args[0]
+		enabled := len(args) == 2 && args[1] == "--runtime"
+		if (command == "install" || command == "run") && (len(args) == 1 || enabled) {
+			return command, enabled, nil
+		}
+		if command == "uninstall" && len(args) == 1 {
+			return command, false, nil
+		}
+	}
+	return "", false, errors.New("service install|run [--runtime], or service uninstall")
+}
+
+func serviceCommand(exe string, withRuntime bool) string {
+	command := windows.EscapeArg(exe) + " service run"
+	if withRuntime {
+		command += " --runtime"
+	}
+	return command
 }
