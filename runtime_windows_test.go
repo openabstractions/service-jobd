@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+func TestProcessElevationIsObserved(t *testing.T) {
+	if _, err := processElevated(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeRegistrationOptIn(t *testing.T) {
 	for _, command := range []string{"install", "run"} {
 		for _, enabled := range []bool{false, true} {

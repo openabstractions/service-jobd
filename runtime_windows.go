@@ -6,12 +6,28 @@ import (
 	"fmt"
 	"github.com/openabstractions/abstraction-download/go/serve"
 	"github.com/openabstractions/abstraction-download/go/serve/runtimehost"
+	"golang.org/x/sys/windows"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"time"
+	"unsafe"
 )
+
+func processElevated() (bool, error) {
+	var elevation uint32
+	var returned uint32
+	err := windows.GetTokenInformation(windows.GetCurrentProcessToken(), windows.TokenElevation,
+		(*byte)(unsafe.Pointer(&elevation)), uint32(unsafe.Sizeof(elevation)), &returned)
+	if err != nil {
+		return false, err
+	}
+	if returned != uint32(unsafe.Sizeof(elevation)) {
+		return false, errors.New("unexpected token elevation information length")
+	}
+	return elevation != 0, nil
+}
 
 func runRuntime(ctx context.Context) error {
 	host, err := runtimehost.Start(ctx, runtimehost.Options{ShutdownTimeout: 5 * time.Second, ForceTimeout: 2 * time.Second})

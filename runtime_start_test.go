@@ -7,6 +7,21 @@ import (
 	"testing"
 )
 
+func TestUnelevatedStartGuardRefusesElevatedAndUnobservedToken(t *testing.T) {
+	for _, test := range []struct {
+		elevated bool
+		err      error
+		allowed  bool
+	}{
+		{false, nil, true}, {true, nil, false}, {false, errors.New("token query refused"), false},
+	} {
+		err := checkUnelevated(func() (bool, error) { return test.elevated, test.err })
+		if (err == nil) != test.allowed {
+			t.Fatalf("elevated=%v query=%v result=%v", test.elevated, test.err, err)
+		}
+	}
+}
+
 func TestRuntimeStartRequiresCapabilitiesForEveryBusReply(t *testing.T) {
 	for _, already := range []bool{false, true} {
 		for _, ready := range []bool{false, true} {

@@ -91,11 +91,17 @@ func cmdStop(args []string) {
 func cmdStart(args []string) {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	withRuntime := fs.Bool("runtime", false, "require the installed sibling runtime")
+	requireUser := fs.Bool("require-unelevated", false, "refuse activation unless the process token is unelevated")
 	interval := fs.Duration("interval", 30*time.Second, "how often to sweep")
 	endpoint := fs.String("endpoint", download.DefaultEndpoint(), "where applications connect")
 	var without serve.Systems
 	fs.Var(&without, "without", `run one tier lower by ignoring a system; repeatable, e.g. --without nas --without bits`)
 	need(fs, args)
+	if *requireUser {
+		if err := checkUnelevated(processElevated); err != nil {
+			fatal(err)
+		}
+	}
 
 	self, err := os.Executable()
 	if err != nil {
@@ -130,6 +136,17 @@ func cmdStart(args []string) {
 	fmt.Printf("  listening at %s\n", got.Endpoint)
 	fmt.Printf("  delegates to %s\n", got.Tier)
 	fmt.Printf("  log          %s\n", got.Log)
+}
+
+func checkUnelevated(inspect func() (bool, error)) error {
+	elevated, err := inspect()
+	if err != nil {
+		return fmt.Errorf("cannot establish unelevated activation context: %w", err)
+	}
+	if elevated {
+		return fmt.Errorf("runtime activation refused an elevated process; run jobdw start --runtime from the user's unelevated context")
+	}
+	return nil
 }
 
 // A bus response establishes supervisor availability. Runtime readiness is a

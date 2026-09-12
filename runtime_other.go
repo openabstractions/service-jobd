@@ -7,6 +7,10 @@ import (
 	"errors"
 )
 
+func processElevated() (bool, error) {
+	return false, errors.New("unelevated activation token check requires Windows")
+}
+
 func runWithRuntime(context.Context, []string) error {
 	return errors.New("jobd: --runtime activation requires Windows")
 }
