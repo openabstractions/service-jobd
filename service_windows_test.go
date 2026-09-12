@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -112,4 +114,60 @@ func TestWindowlessImageRefusesWhenTheTwinIsMissing(t *testing.T) {
 func testEndpoint(t *testing.T) string {
 	t.Helper()
 	return fmt.Sprintf(`\\.\pipe\jobd-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
+}
+
+// This fake SCM grants exactly the requested handle rights. No services are
+// created or configured on the test host.
+func TestRegistrationHandleCanConfigureRestartRecovery(t *testing.T) {
+	for _, repair := range []bool{false, true} {
+		t.Run(fmt.Sprintf("repair=%t", repair), func(t *testing.T) {
+			var granted uint32
+			opens := 0
+			h, existed, err := registrationHandle(func(access uint32) (windows.Handle, error) {
+				if repair {
+					return 0, windows.ERROR_SERVICE_EXISTS
+				}
+				granted = access
+				return 41, nil
+			}, func(access uint32) (windows.Handle, error) {
+				opens++
+				granted = access
+				return 41, nil
+			})
+			if err != nil || h != 41 || existed != repair || (opens == 1) != repair {
+				t.Fatalf("handle=%v existed=%v opens=%d err=%v", h, existed, opens, err)
+			}
+			// Model the documented authorization check for the operation the
+			// caller performs next, rather than comparing to a shared constant.
+			configureRestart := func() error {
+				if granted&windows.SERVICE_CHANGE_CONFIG == 0 || granted&windows.SERVICE_START == 0 {
+					return windows.ERROR_ACCESS_DENIED
+				}
+				return nil
+			}
+			if err := configureRestart(); err != nil {
+				t.Fatalf("restart recovery with granted rights %#x: %v", granted, err)
+			}
+		})
+	}
+}
+
+func TestRegistrationHandleDoesNotHideSCMFailures(t *testing.T) {
+	for _, repair := range []bool{false, true} {
+		t.Run(fmt.Sprintf("repair=%t", repair), func(t *testing.T) {
+			opens := 0
+			h, existed, err := registrationHandle(func(uint32) (windows.Handle, error) {
+				if repair {
+					return 0, windows.ERROR_SERVICE_EXISTS
+				}
+				return 0, windows.ERROR_ACCESS_DENIED
+			}, func(uint32) (windows.Handle, error) {
+				opens++
+				return 0, windows.ERROR_ACCESS_DENIED
+			})
+			if h != 0 || existed != repair || !errors.Is(err, windows.ERROR_ACCESS_DENIED) || (opens == 1) != repair {
+				t.Fatalf("handle=%v existed=%v opens=%d err=%v", h, existed, opens, err)
+			}
+		})
+	}
 }

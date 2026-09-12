@@ -107,13 +107,14 @@ func serviceInstall() error {
 
 	// serviceStartName and password nil: a per-user service takes its account
 	// from whoever signs in, which is why nothing is stored here to leak.
-	h, err := windows.CreateService(m, name, disp, windows.SERVICE_CHANGE_CONFIG,
-		serviceUserOwnProcess, windows.SERVICE_AUTO_START, windows.SERVICE_ERROR_NORMAL,
-		bin, nil, nil, nil, nil, nil)
-	existed := errors.Is(err, windows.ERROR_SERVICE_EXISTS)
-	if existed {
-		h, err = windows.OpenService(m, name, windows.SERVICE_CHANGE_CONFIG)
-	}
+	h, existed, err := registrationHandle(
+		func(access uint32) (windows.Handle, error) {
+			return windows.CreateService(m, name, disp, access,
+				serviceUserOwnProcess, windows.SERVICE_AUTO_START, windows.SERVICE_ERROR_NORMAL,
+				bin, nil, nil, nil, nil, nil)
+		},
+		func(access uint32) (windows.Handle, error) { return windows.OpenService(m, name, access) },
+	)
 	if err != nil {
 		return fmt.Errorf("registering %s: %w", serviceName, err)
 	}
@@ -133,6 +134,20 @@ func serviceInstall() error {
 	}
 	fmt.Printf("registered %s -> %s\n", serviceName, exe)
 	return nil
+}
+
+// registrationHandle acquires the rights needed by both configuration and
+// restart recovery, including on repair. ChangeServiceConfig2 requires
+// SERVICE_START when the recovery actions contain SC_ACTION_RESTART:
+// https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-changeserviceconfig2w
+func registrationHandle(create, open func(uint32) (windows.Handle, error)) (windows.Handle, bool, error) {
+	access := uint32(windows.SERVICE_CHANGE_CONFIG | windows.SERVICE_START)
+	h, err := create(access)
+	existed := errors.Is(err, windows.ERROR_SERVICE_EXISTS)
+	if existed {
+		h, err = open(access)
+	}
+	return h, existed, err
 }
 
 // setRecovery configures restart delays of 3s, 10s, then 30s. The documented SCM
