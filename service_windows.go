@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -47,6 +48,8 @@ func cmdService(args []string) {
 		err = serviceInstall(withRuntime)
 	case "uninstall":
 		err = serviceUninstall()
+	case "stop":
+		err = serviceStop()
 	case "run":
 		err = serviceRun(withRuntime)
 	}
@@ -168,39 +171,69 @@ func setRecovery(h windows.Handle) error {
 }
 
 func serviceUninstall() error {
+	return serviceQuiesce(true)
+}
+func serviceStop() error { return serviceQuiesce(false) }
+func serviceQuiesce(remove bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
 	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT|windows.SC_MANAGER_ENUMERATE_SERVICE)
 	if err != nil {
-		return fmt.Errorf("deregistering a per-user service needs an administrator token: %w", err)
+		return fmt.Errorf("controlling registered per-user services needs an administrator token: %w", err)
 	}
 	defer windows.CloseServiceHandle(m)
 
-	var failed []string
-	clones, err := instances(m)
+	gone, err := uninstallServices(ctx, func() ([]string, error) { return instances(m) }, func(ctx context.Context, name string) (bool, error) { return checkedService(ctx, m, name, remove) })
 	if err != nil {
-		failed = append(failed, fmt.Sprintf("%s_* (could not be listed: %v)", serviceName, err))
+		return err
+	}
+	if gone == 0 {
+		fmt.Printf("no registered %s instances were present\n", serviceName)
+	}
+	return nil
+}
+
+func uninstallServices(ctx context.Context, list func() ([]string, error), remove func(context.Context, string) (bool, error)) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	names, err := list()
+	if err != nil {
+		return 0, fmt.Errorf("cannot enumerate supervisor instances: %w", err)
 	}
 	gone := 0
-	for _, n := range append(clones, serviceName) {
-		removed, err := deleteService(m, n)
+	for _, name := range append(names, serviceName) {
+		if err := ctx.Err(); err != nil {
+			return gone, err
+		}
+		removed, err := remove(ctx, name)
 		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s (%v)", n, err))
-			continue
+			return gone, fmt.Errorf("supervisor %s operation failed: %w", name, err)
 		}
 		if removed {
 			gone++
-			fmt.Printf("removed %s\n", n)
 		}
 	}
-	// A supervisor that cannot be deregistered must not become a product that
-	// cannot be removed, so the installer ignores this status — which is why
-	// what is left behind has to be named here or it is named nowhere.
-	if failed != nil {
-		return fmt.Errorf("left behind, remove by hand with sc delete: %s", strings.Join(failed, ", "))
+	if err := ctx.Err(); err != nil {
+		return gone, err
 	}
-	if gone == 0 {
-		fmt.Printf("nothing to remove: %s was not registered\n", serviceName)
+	after, err := list()
+	if err != nil {
+		return gone, fmt.Errorf("cannot verify supervisor instance set after shutdown: %w", err)
 	}
-	return nil
+	if err = ctx.Err(); err != nil {
+		return gone, err
+	}
+	known := map[string]bool{}
+	for _, name := range names {
+		known[name] = true
+	}
+	for _, name := range after {
+		if !known[name] {
+			return gone, fmt.Errorf("new supervisor instance appeared during shutdown: %s", name)
+		}
+	}
+	return gone, nil
 }
 
 // instances names the per-session clones. Deleting the template does not delete
@@ -222,12 +255,19 @@ func instances(m windows.Handle) ([]string, error) {
 	return out, nil
 }
 
-func deleteService(m windows.Handle, name string) (bool, error) {
+func deleteService(ctx context.Context, m windows.Handle, name string) (bool, error) {
+	return checkedService(ctx, m, name, true)
+}
+func checkedService(ctx context.Context, m windows.Handle, name string, remove bool) (bool, error) {
 	p, err := windows.UTF16PtrFromString(name)
 	if err != nil {
 		return false, err
 	}
-	h, err := windows.OpenService(m, p, windows.SERVICE_STOP|windows.SERVICE_QUERY_STATUS|windows.DELETE)
+	access := uint32(windows.SERVICE_STOP | windows.SERVICE_QUERY_STATUS)
+	if remove {
+		access |= windows.DELETE
+	}
+	h, err := windows.OpenService(m, p, access)
 	if err != nil {
 		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 			return false, nil
@@ -235,14 +275,168 @@ func deleteService(m windows.Handle, name string) (bool, error) {
 		return false, err
 	}
 	defer windows.CloseServiceHandle(h)
-	// A stopped service answers ERROR_SERVICE_NOT_ACTIVE here, and that is the
-	// state we are trying to reach.
-	var st windows.SERVICE_STATUS
-	_ = windows.ControlService(h, windows.SERVICE_CONTROL_STOP, &st)
-	if err := windows.DeleteService(h); err != nil {
+	ops := removalOps{
+		query: func() (windows.SERVICE_STATUS_PROCESS, error) {
+			var status windows.SERVICE_STATUS_PROCESS
+			var needed uint32
+			err := windows.QueryServiceStatusEx(h, windows.SC_STATUS_PROCESS_INFO, (*byte)(unsafe.Pointer(&status)), uint32(unsafe.Sizeof(status)), &needed)
+			return status, err
+		},
+		stop: func() error {
+			var status windows.SERVICE_STATUS
+			return windows.ControlService(h, windows.SERVICE_CONTROL_STOP, &status)
+		},
+		pin: func(pid uint32) (removalProcess, error) {
+			h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+			if err != nil {
+				return nil, err
+			}
+			return retainedServiceProcess{h}, nil
+		},
+	}
+	if remove {
+		ops.remove = func() error { return windows.DeleteService(h) }
+	}
+	return stopAndDeleteService(ctx, ops)
+}
+
+type removalProcess interface {
+	exited() (bool, error)
+	close() error
+}
+type retainedServiceProcess struct{ handle windows.Handle }
+
+func (p retainedServiceProcess) close() error { return windows.CloseHandle(p.handle) }
+func (p retainedServiceProcess) exited() (bool, error) {
+	state, err := windows.WaitForSingleObject(p.handle, 0)
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	switch state {
+	case windows.WAIT_OBJECT_0:
+		return true, nil
+	case uint32(windows.WAIT_TIMEOUT):
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected process wait state %d", state)
+	}
+}
+
+type removalOps struct {
+	query  func() (windows.SERVICE_STATUS_PROCESS, error)
+	stop   func() error
+	pin    func(uint32) (removalProcess, error)
+	remove func() error
+}
+
+// The SCM supplies the process identity. Pin and requery before requesting stop;
+// keep that handle until both STOPPED and process exit are observed. Native SCM
+// RPCs retain their OS blocking behavior; every subsequent action checks the
+// shared deadline and no deletion occurs after it expires.
+func stopAndDeleteService(ctx context.Context, ops removalOps) (bool, error) {
+	var process removalProcess
+	var pid uint32
+	defer func() {
+		if process != nil {
+			process.close()
+		}
+	}()
+	stopSent := false
+	observedActive := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		status, err := ops.query()
+		if err != nil {
+			return false, err
+		}
+		if err = ctx.Err(); err != nil {
+			return false, err
+		}
+		if status.CurrentState == windows.SERVICE_STOPPED {
+			if process == nil && observedActive {
+				return false, errors.New("stopped supervisor has no retained process identity to confirm exit")
+			}
+			if process != nil {
+				exited, err := process.exited()
+				if err != nil {
+					return false, err
+				}
+				if !exited {
+					if err = waitRemoval(ctx); err != nil {
+						return false, err
+					}
+					continue
+				}
+			}
+			if err = ctx.Err(); err != nil {
+				return false, err
+			}
+			if ops.remove != nil {
+				if err = ops.remove(); err != nil {
+					return false, err
+				}
+			}
+			return true, nil
+		}
+		observedActive = true
+		if status.ServiceType&windows.SERVICE_WIN32_OWN_PROCESS == 0 || status.ServiceType&windows.SERVICE_WIN32_SHARE_PROCESS != 0 {
+			return false, errors.New("refusing process-exit assumptions for a shared or unsupported service type")
+		}
+		if process == nil {
+			// SCM does not guarantee a valid PID during START_PENDING or
+			// STOP_PENDING. Wait for a stable running/paused identity.
+			if status.CurrentState == windows.SERVICE_START_PENDING || status.CurrentState == windows.SERVICE_STOP_PENDING {
+				if err = waitRemoval(ctx); err != nil {
+					return false, err
+				}
+				continue
+			}
+			if status.ProcessId == 0 {
+				return false, errors.New("active supervisor has no process identity")
+			}
+			pid = status.ProcessId
+			process, err = ops.pin(pid)
+			if err != nil {
+				return false, fmt.Errorf("retain supervisor process: %w", err)
+			}
+			confirmed, err := ops.query()
+			if err != nil {
+				return false, err
+			}
+			if confirmed.ProcessId != pid || confirmed.CurrentState == windows.SERVICE_STOPPED {
+				return false, errors.New("supervisor process changed while retaining identity")
+			}
+			continue
+		}
+		if status.ProcessId != 0 && status.ProcessId != pid {
+			return false, errors.New("supervisor process changed during shutdown")
+		}
+		if !stopSent && status.CurrentState != windows.SERVICE_STOP_PENDING {
+			if err = ctx.Err(); err != nil {
+				return false, err
+			}
+			err = ops.stop()
+			if err != nil && !errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE) {
+				return false, fmt.Errorf("stop supervisor: %w", err)
+			}
+			stopSent = true
+		}
+		if err = waitRemoval(ctx); err != nil {
+			return false, err
+		}
+	}
+}
+func waitRemoval(ctx context.Context) error {
+	timer := time.NewTimer(25 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // serviceRun is what the SCM starts, and the dispatcher is the whole point of
@@ -346,11 +540,11 @@ func serviceArguments(args []string) (string, bool, error) {
 		if (command == "install" || command == "run") && (len(args) == 1 || enabled) {
 			return command, enabled, nil
 		}
-		if command == "uninstall" && len(args) == 1 {
+		if (command == "uninstall" || command == "stop") && len(args) == 1 {
 			return command, false, nil
 		}
 	}
-	return "", false, errors.New("service install|run [--runtime], or service uninstall")
+	return "", false, errors.New("service install|run [--runtime], or service stop|uninstall")
 }
 
 func serviceCommand(exe string, withRuntime bool) string {

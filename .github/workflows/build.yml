@@ -21,6 +21,29 @@ env:
   GOWORK: 'off'
 
 jobs:
+  facade-core:
+    if: github.event.repository.name == 'abstraction-facade'
+    name: Go resolver core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go-core/go.mod
+          cache: false
+      - name: consume the independently published core
+        working-directory: go-core
+        run: |
+          test "$(go env GOWORK)" = off
+          go build -mod=readonly ./...
+          go test -mod=readonly -count=1 -timeout=5m ./...
+          printf '%s: standalone resolver core built and tested with pinned dependencies; GOWORK=off\n' "$RUNNER_OS" >> "$GITHUB_STEP_SUMMARY"
+
   go:
     name: go (${{ matrix.os }})
     strategy:
