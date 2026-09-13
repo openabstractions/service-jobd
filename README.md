@@ -1,8 +1,13 @@
 # service-jobd
 
-**In development. This repository carries no tag**, so there is no release to
-install: `go install` from a commit you have read, or build from a clone. The
-signed Windows installer is `UNPROVEN` — see Status.
+The packaged supervisor also owns `openabstractions serve runtime` through native
+user lifecycle integration. Applications use the resolved service clients. The
+worker/store bus and commands below document retained legacy backend operation;
+their historical platform notes do not qualify the current packaged runtime.
+
+Select an exact reviewed source revision or released package. Consult
+[redist](https://github.com/openabstractions/redist) for available assets and their
+signing and lifecycle qualification. This page does not certify a release.
 
 For someone running applications built on these abstractions: `jobd` is an
 optional supervisor process that finishes and tidies up jobs — downloads, today
@@ -115,15 +120,16 @@ write this store through a mount whose path does not say so).
 
 ## Removing it
 
-1. `jobd stop`.
-2. If you registered a scheduled task, `jobd uninstall` prints the `schtasks`
-   commands that remove it.
-3. Delete the store directory — `~/.abstraction` unless you configured another.
-   That removes every job record, partial file and the heartbeat. Delete the
-   configuration file too if you ran `jobd setup`; `jobd setup --show` prints
-   its path.
-4. `go clean -i github.com/openabstractions/service-jobd`, or delete the binary
-   from `$(go env GOPATH)/bin`.
+For a packaged runtime, use the package's supported removal entrypoint: Windows
+Apps uninstall or the installed POSIX `uninstall.sh`. Follow the exact release's
+[redist instructions](https://github.com/openabstractions/redist). Removal stops
+and verifies the owned runtime before deleting its payload and preserves user data.
+
+For a deliberately selected legacy worker, stop that worker and remove the exact
+registration you created before removing its executable. `jobd install`/`uninstall`
+are legacy scheduled-task helpers; they do not describe every packaged runtime mode.
+Deleting a store or configuration is a separate, intentional data-removal action.
+Keep records and partial results when accepted work may still need recovery.
 
 ## Status
 
