@@ -38,20 +38,24 @@ const (
 )
 
 func cmdService(args []string) {
-	command, withRuntime, err := serviceArguments(args)
+	request, err := serviceArguments(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "jobd:", err)
 		os.Exit(2)
 	}
-	switch command {
+	switch request.command {
 	case "install":
-		err = serviceInstall(withRuntime)
+		err = serviceInstall(request.runtime)
 	case "uninstall":
 		err = serviceUninstall()
 	case "stop":
-		err = serviceStop()
+		if request.userFolder != "" {
+			err = serviceStopUser(request.userFolder)
+		} else {
+			err = serviceStop()
+		}
 	case "run":
-		err = serviceRun(withRuntime)
+		err = serviceRun(request.runtime)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "jobd:", err)
@@ -533,18 +537,31 @@ func failed(err error) (bool, uint32) {
 
 // The registered binary arguments arrive through os.Args. scmArgs contains only
 // the separate StartService argument vector, which remains download flags.
-func serviceArguments(args []string) (string, bool, error) {
+//
+// `service stop --user <install folder>` is the per-user form of the checked
+// upgrade stop. The verb is the same act; --user selects the account's own
+// processes under that folder in place of registered SCM instances.
+type serviceRequest struct {
+	command    string
+	runtime    bool
+	userFolder string
+}
+
+func serviceArguments(args []string) (serviceRequest, error) {
 	if len(args) >= 1 && len(args) <= 2 {
 		command := args[0]
 		enabled := len(args) == 2 && args[1] == "--runtime"
 		if (command == "install" || command == "run") && (len(args) == 1 || enabled) {
-			return command, enabled, nil
+			return serviceRequest{command: command, runtime: enabled}, nil
 		}
 		if (command == "uninstall" || command == "stop") && len(args) == 1 {
-			return command, false, nil
+			return serviceRequest{command: command}, nil
 		}
 	}
-	return "", false, errors.New("service install|run [--runtime], or service stop|uninstall")
+	if len(args) == 3 && args[0] == "stop" && args[1] == "--user" && args[2] != "" {
+		return serviceRequest{command: "stop", userFolder: args[2]}, nil
+	}
+	return serviceRequest{}, errors.New("service install|run [--runtime], service stop [--user <install folder>], or service uninstall")
 }
 
 func serviceCommand(exe string, withRuntime bool) string {

@@ -121,6 +121,9 @@ func usage() {
                                made of it
   jobd service stop            checked stop of all registered instances; preserve
                                registrations, with one shared 60-second budget
+  jobd service stop --user <folder>  end this account's jobd, jobdw and
+                               openabstractions processes running from <folder>
+                               and confirm each exit, within 60 seconds
   jobd status [--exit-code]    what is in the store right now; with the flag,
                                exit 1 unless a supervisor is alive (a HEALTHCHECK)
   jobd discover                ask the supervisor over its bus who it is and who

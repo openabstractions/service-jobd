@@ -121,10 +121,10 @@ func TestServiceUninstallSharedBudgetAndEnumeration(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
 		t.Fatal(calls, err)
 	}
-	if command, flag, err := serviceArguments([]string{"stop"}); command != "stop" || flag || err != nil {
-		t.Fatal(command, flag, err)
+	if request, err := serviceArguments([]string{"stop"}); request.command != "stop" || request.runtime || request.userFolder != "" || err != nil {
+		t.Fatal(request, err)
 	}
-	if _, _, err := serviceArguments([]string{"stop", "--runtime"}); err == nil {
+	if _, err := serviceArguments([]string{"stop", "--runtime"}); err == nil {
 		t.Fatal("accepted irrelevant stop flag")
 	}
 }

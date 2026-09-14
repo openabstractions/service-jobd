@@ -23,11 +23,11 @@ func TestRuntimeRegistrationOptIn(t *testing.T) {
 			if enabled {
 				args = append(args, "--runtime")
 			}
-			got, flag, err := serviceArguments(args)
-			if err != nil || got != command || flag != enabled {
-				t.Fatalf("parse %v = %q %v %v", args, got, flag, err)
+			got, err := serviceArguments(args)
+			if err != nil || got.command != command || got.runtime != enabled || got.userFolder != "" {
+				t.Fatalf("parse %v = %+v %v", args, got, err)
 			}
-			line := serviceCommand(`C:\Program Files\OA\jobdw.exe`, flag)
+			line := serviceCommand(`C:\Program Files\OA\jobdw.exe`, got.runtime)
 			want := `"C:\Program Files\OA\jobdw.exe" service run`
 			if enabled {
 				want += " --runtime"
@@ -38,7 +38,7 @@ func TestRuntimeRegistrationOptIn(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{nil, {"uninstall", "--runtime"}, {"run", "--unknown"}, {"run", "--runtime", "--runtime"}} {
-		if _, _, err := serviceArguments(args); err == nil {
+		if _, err := serviceArguments(args); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
 	}
