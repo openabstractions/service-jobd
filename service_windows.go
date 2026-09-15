@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,12 +71,71 @@ func cmdService(args []string) {
 		err = serviceRun(request.runtime)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "jobd:", err)
-		if errors.Is(err, errUpgradeInProgress) {
-			os.Exit(exitUpgradeInProgress)
-		}
-		os.Exit(1)
+		os.Exit(serviceFailure(request, err, os.Stderr, installerActionsPath, time.Now()))
 	}
+}
+
+// serviceFailure reports err and returns the exit status. Windows Installer
+// discards a custom action's stderr, so a failed installer-invoked command also
+// appends one line to installer-actions.txt beside its scope's exclusion record.
+// That append is best-effort and never changes the status.
+func serviceFailure(request serviceRequest, err error, stderr io.Writer, path func(scope string) (string, error), now time.Time) int {
+	fmt.Fprintln(stderr, "jobd:", err)
+	if command, scope := installerAction(request); command != "" {
+		appendInstallerAction(path, scope, fmt.Sprintf("%s service %s: %s\n",
+			now.UTC().Format(time.RFC3339), command, strings.Join(strings.Fields(err.Error()), " ")))
+	}
+	if errors.Is(err, errUpgradeInProgress) {
+		return exitUpgradeInProgress
+	}
+	return 1
+}
+
+// installerAction names the commands the MSI runs, with their scope.
+func installerAction(request serviceRequest) (command, scope string) {
+	switch {
+	case request.command == "begin-upgrade" || request.command == "end-upgrade":
+		return request.command + " --" + request.scope, request.scope
+	case request.command == "stop" && request.userFolder != "":
+		return "stop --user", "user"
+	case request.command == "start" && request.scope == "machine":
+		return "start --machine", "machine"
+	case request.command == "start" && request.related != "":
+		return "start --related", "user"
+	}
+	return "", ""
+}
+
+func installerActionsPath(scope string) (string, error) {
+	record, err := exclusionPath(scope)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(record), "installer-actions.txt"), nil
+}
+
+// appendInstallerAction creates the machine directory with its protected ACL,
+// as the exclusion record does, and ignores every failure.
+func appendInstallerAction(path func(scope string) (string, error), scope, line string) {
+	file, err := path(scope)
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(file)
+	if scope == "machine" {
+		err = secureMachineDirectories(dir)
+	} else {
+		err = os.MkdirAll(dir, 0o700)
+	}
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(line)
+	_ = f.Close()
 }
 
 // windowlessImage is what gets registered, and it is never the running

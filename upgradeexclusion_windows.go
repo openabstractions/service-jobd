@@ -29,6 +29,20 @@ import (
 // so a transaction that ended without committing or rolling back stops excluding
 // when that process is gone. The exclusion is not a lock: no OS lock outlives
 // the short custom action processes that write it.
+//
+// A per-user upgrade run by a standard account executes begin-upgrade
+// impersonated, and its parent is the SYSTEM-owned msiexec server, which that
+// account cannot open. The helper then takes the parent's PID and image name
+// from the process snapshot and records creation time 0, meaning "unreadable
+// when written". Every reader treats such a holder the same way: a PID that is
+// gone ends the exclusion, and a PID that is present, whether or not this
+// reader can open it, is honoured only until exclusionUnverifiedLimit after the
+// record began. PID reuse cannot be ruled out without a creation time, and the
+// limit bounds what a reused PID can hold. The standard user's own activation
+// paths get access denied on the holder, as the writer did; an elevated reader
+// can open it but has nothing to compare, so both reach the same verdict. When
+// the parent is readable, the record carries its creation time and full
+// verification applies.
 
 var errUpgradeInProgress = errors.New("an upgrade of this installation is in progress")
 
@@ -98,7 +112,8 @@ func (r *upgradeExclusion) validate() error {
 			return fmt.Errorf("upgrade exclusion folder %q is not a clean absolute non-root path", folder)
 		}
 	}
-	if r.Installer.PID == 0 || r.Installer.Created <= 0 {
+	// Created 0 is a holder that was unreadable when the record was written.
+	if r.Installer.PID == 0 || r.Installer.Created < 0 {
 		return errors.New("upgrade exclusion record names no installer process")
 	}
 	if r.Begun.IsZero() {
@@ -566,19 +581,26 @@ func trustedExclusionFile(path, scope string) error {
 	return fmt.Errorf("owned by %s, which cannot hold the %s upgrade exclusion", owner, scope)
 }
 
-// processAlive reports whether holder still names the same running process.
+// processAlive reports whether holder still names the same running process. A
+// holder recorded with creation time 0 is never compared: it is honoured while
+// its PID exists and the record is younger than exclusionUnverifiedLimit.
 func processAlive(holder processIdentity, begun, now time.Time) bool {
+	withinLimit := now.Sub(begun) < exclusionUnverifiedLimit
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, holder.PID)
 	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
 		return false
 	}
 	if err != nil {
-		return now.Sub(begun) < exclusionUnverifiedLimit
+		return withinLimit
 	}
 	defer windows.CloseHandle(h)
+	if holder.Created == 0 {
+		state, err := windows.WaitForSingleObject(h, 0)
+		return withinLimit && err == nil && state == uint32(windows.WAIT_TIMEOUT)
+	}
 	created, err := handleCreated(h)
 	if err != nil {
-		return now.Sub(begun) < exclusionUnverifiedLimit
+		return withinLimit
 	}
 	if created != holder.Created {
 		return false
@@ -587,41 +609,95 @@ func processAlive(holder processIdentity, begun, now time.Time) bool {
 	return err == nil && state == uint32(windows.WAIT_TIMEOUT)
 }
 
-// installerIdentity is this custom action's parent: the Windows Installer
-// process running the transaction script. A parent created after this process
-// means its PID was reused, and is refused.
+// identityOps are the process queries installerIdentity makes. Tests substitute
+// them; systemIdentityOps is the installed behaviour.
+type identityOps struct {
+	self func() uint32
+	// parent returns the parent PID and image name from the process snapshot.
+	parent func(pid uint32) (uint32, string, error)
+	// created is this process's creation time.
+	created func() (int64, error)
+	// inspect opens pid and returns its creation time and full image path. An
+	// OpenProcess failure is returned as *openProcessError.
+	inspect func(pid uint32) (int64, string, error)
+}
+
+type openProcessError struct {
+	pid uint32
+	err error
+}
+
+func (e *openProcessError) Error() string {
+	return fmt.Sprintf("open parent process %d: %v", e.pid, e.err)
+}
+func (e *openProcessError) Unwrap() error { return e.err }
+
+func systemIdentityOps() identityOps {
+	return identityOps{
+		self:    func() uint32 { return uint32(os.Getpid()) },
+		parent:  parentProcess,
+		created: func() (int64, error) { return handleCreated(windows.CurrentProcess()) },
+		inspect: inspectProcess,
+	}
+}
+
 func installerIdentity() (processIdentity, error) {
-	parent, err := parentProcessID(uint32(os.Getpid()))
+	return installerIdentityWith(systemIdentityOps())
+}
+
+// installerIdentityWith is this custom action's parent: the Windows Installer
+// process running the transaction script. A parent created after this process
+// means its PID was reused, and is refused. A parent this account may not open
+// (the SYSTEM msiexec server above an impersonated action) is named by its
+// snapshot PID and image with creation time 0, and the reuse check is skipped
+// only then; the file comment gives how readers treat that record.
+func installerIdentityWith(ops identityOps) (processIdentity, error) {
+	parent, name, err := ops.parent(ops.self())
 	if err != nil {
 		return processIdentity{}, err
 	}
-	own, err := handleCreated(windows.CurrentProcess())
+	own, err := ops.created()
 	if err != nil {
 		return processIdentity{}, err
 	}
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, parent)
-	if err != nil {
-		return processIdentity{}, fmt.Errorf("open parent process %d: %w", parent, err)
+	created, image, err := ops.inspect(parent)
+	var denied *openProcessError
+	if errors.As(err, &denied) && errors.Is(denied.err, windows.ERROR_ACCESS_DENIED) {
+		return processIdentity{PID: parent, Created: 0, Image: name}, nil
 	}
-	defer windows.CloseHandle(h)
-	created, err := handleCreated(h)
 	if err != nil {
 		return processIdentity{}, err
+	}
+	if created <= 0 {
+		return processIdentity{}, fmt.Errorf("parent process %d reported no creation time", parent)
 	}
 	if created > own {
 		return processIdentity{}, fmt.Errorf("parent process %d was created after this process; its PID was reused", parent)
 	}
-	image, err := (systemHeldProcess{pid: parent, handle: h}).image()
-	if err != nil {
-		return processIdentity{}, err
-	}
 	return processIdentity{PID: parent, Created: created, Image: image}, nil
 }
 
-func parentProcessID(pid uint32) (uint32, error) {
+func inspectProcess(pid uint32) (int64, string, error) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return 0, "", &openProcessError{pid: pid, err: err}
+	}
+	defer windows.CloseHandle(h)
+	created, err := handleCreated(h)
+	if err != nil {
+		return 0, "", err
+	}
+	image, err := (systemHeldProcess{pid: pid, handle: h}).image()
+	if err != nil {
+		return 0, "", err
+	}
+	return created, image, nil
+}
+
+func parentProcess(pid uint32) (uint32, string, error) {
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer windows.CloseHandle(snap)
 	var entry windows.ProcessEntry32
@@ -629,12 +705,19 @@ func parentProcessID(pid uint32) (uint32, error) {
 	for err = windows.Process32First(snap, &entry); err == nil; err = windows.Process32Next(snap, &entry) {
 		if entry.ProcessID == pid {
 			if entry.ParentProcessID == 0 {
-				return 0, fmt.Errorf("process %d has no parent", pid)
+				return 0, "", fmt.Errorf("process %d has no parent", pid)
 			}
-			return entry.ParentProcessID, nil
+			parent := entry.ParentProcessID
+			// The parent's own entry carries its image name.
+			for err = windows.Process32First(snap, &entry); err == nil; err = windows.Process32Next(snap, &entry) {
+				if entry.ProcessID == parent {
+					return parent, windows.UTF16ToString(entry.ExeFile[:]), nil
+				}
+			}
+			return 0, "", fmt.Errorf("parent process %d of %d is not in the process snapshot", parent, pid)
 		}
 	}
-	return 0, fmt.Errorf("process %d is not in the process snapshot", pid)
+	return 0, "", fmt.Errorf("process %d is not in the process snapshot", pid)
 }
 
 func stoppedProcesses(found []predecessor) []stoppedProcess {

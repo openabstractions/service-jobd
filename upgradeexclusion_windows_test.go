@@ -68,18 +68,19 @@ func TestUpgradeExclusionRecordIsStrict(t *testing.T) {
 		t.Fatalf("round trip: %+v %v", decoded, err)
 	}
 	broken := map[string]func(*upgradeExclusion){
-		"version":          func(r *upgradeExclusion) { r.Version = 2 },
-		"scope":            func(r *upgradeExclusion) { r.Scope = "session" },
-		"no folder":        func(r *upgradeExclusion) { r.Folders = nil },
-		"relative folder":  func(r *upgradeExclusion) { r.Folders = []string{`Programs\OpenAbstractions`} },
-		"volume root":      func(r *upgradeExclusion) { r.Folders = []string{`C:\`} },
-		"unclean folder":   func(r *upgradeExclusion) { r.Folders = []string{`C:\Users\x\..\y`} },
-		"no installer":     func(r *upgradeExclusion) { r.Installer.PID = 0 },
-		"no creation time": func(r *upgradeExclusion) { r.Installer.Created = 0 },
-		"no start time":    func(r *upgradeExclusion) { r.Begun = time.Time{} },
-		"relative stopped": func(r *upgradeExclusion) { r.Stopped[0].Image = "jobdw.exe" },
-		"other service":    func(r *upgradeExclusion) { r.Services = []string{"Spooler"} },
-		"template service": func(r *upgradeExclusion) { r.Services = []string{serviceName + "_"} },
+		"version":            func(r *upgradeExclusion) { r.Version = 2 },
+		"scope":              func(r *upgradeExclusion) { r.Scope = "session" },
+		"no folder":          func(r *upgradeExclusion) { r.Folders = nil },
+		"relative folder":    func(r *upgradeExclusion) { r.Folders = []string{`Programs\OpenAbstractions`} },
+		"volume root":        func(r *upgradeExclusion) { r.Folders = []string{`C:\`} },
+		"unclean folder":     func(r *upgradeExclusion) { r.Folders = []string{`C:\Users\x\..\y`} },
+		"no installer":       func(r *upgradeExclusion) { r.Installer.PID = 0 },
+		"unreadable, no pid": func(r *upgradeExclusion) { r.Installer.PID, r.Installer.Created = 0, 0 },
+		"negative creation":  func(r *upgradeExclusion) { r.Installer.Created = -1 },
+		"no start time":      func(r *upgradeExclusion) { r.Begun = time.Time{} },
+		"relative stopped":   func(r *upgradeExclusion) { r.Stopped[0].Image = "jobdw.exe" },
+		"other service":      func(r *upgradeExclusion) { r.Services = []string{"Spooler"} },
+		"template service":   func(r *upgradeExclusion) { r.Services = []string{serviceName + "_"} },
 	}
 	for name, mutate := range broken {
 		copy := valid
