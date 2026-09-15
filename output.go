@@ -1,12 +1,18 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/openabstractions/abstraction-download/go/serve"
 )
+
+// complain writes a last diagnostic to standard error ahead of an exit status
+// that already reports the failure. A logger built at the call uses the stderr
+// speakSomewhere chose, and it is the one place a failed diagnostic write ends.
+func complain(v ...any) { log.New(os.Stderr, "", 0).Println(v...) }
 
 // LogName is where this tool says things when nobody can hear it, and it is the
 // file `jobd start` already names as the supervisor's log. One file: a person
@@ -40,7 +46,15 @@ func speakSomewhere() bool {
 	if err != nil {
 		return false
 	}
-	f, err := os.OpenFile(filepath.Join(root, LogName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// Processes started together race to create the log. On darwin a creator
+	// that loses a plain O_CREAT race can fail with ENOENT (golang/go#81246).
+	// O_EXCL makes the loser see ErrExist, and the loser then opens the file
+	// the winner created.
+	path := filepath.Join(root, LogName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		f, err = os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	}
 	if err != nil {
 		return false
 	}

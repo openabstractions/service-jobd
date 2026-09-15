@@ -54,6 +54,9 @@ type userStopOps struct {
 	// any process it lists.
 	snapshot func() (int64, []processEntry, error)
 	open     func(pid uint32) (heldProcess, error)
+	// record, when set, receives every verified predecessor before any is
+	// terminated. A failure terminates nothing.
+	record func([]predecessor) error
 }
 
 type predecessor struct {
@@ -63,27 +66,48 @@ type predecessor struct {
 	process heldProcess
 }
 
-func serviceStopUser(folder string) error {
-	root, err := userInstallFolder(folder)
+// serviceStopUser stops predecessors under the incoming folder and, when related
+// ProductCodes are given, under each related product's recorded folder.
+func serviceStopUser(folder, related string) error {
+	var products []relatedProduct
+	if related != "" {
+		var err error
+		if products, err = relatedProducts(related, msiProductInfo); err != nil {
+			return err
+		}
+	}
+	folders, notes, err := upgradeFolders(folder, products)
 	if err != nil {
 		return err
+	}
+	// A note that cannot be written does not skip the stop; it joins the result.
+	var output error
+	for _, note := range notes {
+		output = errors.Join(output, printed("%s\n", note))
 	}
 	sid, err := currentUserSID()
 	if err != nil {
-		return fmt.Errorf("cannot identify the installing account: %w", err)
+		return errors.Join(fmt.Errorf("cannot identify the installing account: %w", err), output)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), userStopBudget)
 	defer cancel()
-	stopped, err := stopUserPredecessors(ctx, root, sid, systemUserStopOps())
+	stopped, err := stopUserPredecessors(ctx, folders, sid, systemUserStopOps())
 	if err != nil {
+		return errors.Join(err, output)
+	}
+	where := strings.Join(folders, "; ")
+	if stopped == 0 {
+		return errors.Join(output, printed("no jobd, jobdw or openabstractions process of this account is running under %s\n", where))
+	}
+	return errors.Join(output, printed("stopped %d predecessor process(es) of this account under %s; exit confirmed\n", stopped, where))
+}
+
+// withClosed adds a failure to close retained handles to err.
+func withClosed(err, closeErr error) error {
+	if closeErr == nil {
 		return err
 	}
-	if stopped == 0 {
-		fmt.Printf("no jobd, jobdw or openabstractions process of this account is running under %s\n", root)
-		return nil
-	}
-	fmt.Printf("stopped %d predecessor process(es) of this account under %s; exit confirmed\n", stopped, root)
-	return nil
+	return errors.Join(err, fmt.Errorf("close retained process handles: %w", closeErr))
 }
 
 // userInstallFolder accepts the MSI-formatted install folder. The installer
@@ -103,15 +127,22 @@ func userInstallFolder(folder string) (string, error) {
 	return longPath(clean), nil
 }
 
-func stopUserPredecessors(ctx context.Context, folder, sid string, ops userStopOps) (int, error) {
-	found, err := verifiedPredecessors(folder, sid, ops, nil)
+func stopUserPredecessors(ctx context.Context, folders []string, sid string, ops userStopOps) (count int, err error) {
+	found, err := verifiedPredecessors(folders, sid, ops, nil)
 	defer func() {
+		var closeErr error
 		for _, p := range found {
-			p.process.close()
+			closeErr = errors.Join(closeErr, p.process.close())
 		}
+		err = withClosed(err, closeErr)
 	}()
 	if err != nil {
 		return 0, err
+	}
+	if ops.record != nil && len(found) > 0 {
+		if err := ops.record(found); err != nil {
+			return 0, fmt.Errorf("record predecessor processes before stopping them: %w", err)
+		}
 	}
 	for _, p := range found {
 		if err := ctx.Err(); err != nil {
@@ -160,24 +191,25 @@ func stopUserPredecessors(ctx context.Context, folder, sid string, ops userStopO
 	for _, p := range found {
 		stopped[p.pid] = p.created
 	}
-	late, err := verifiedPredecessors(folder, sid, ops, stopped)
+	late, err := verifiedPredecessors(folders, sid, ops, stopped)
+	var closeErr error
 	for _, p := range late {
-		p.process.close()
+		closeErr = errors.Join(closeErr, p.process.close())
 	}
 	if err != nil {
-		return 0, fmt.Errorf("cannot verify predecessor processes after shutdown: %w", err)
+		return 0, withClosed(fmt.Errorf("cannot verify predecessor processes after shutdown: %w", err), closeErr)
 	}
 	if len(late) > 0 {
-		return 0, fmt.Errorf("predecessor process appeared during shutdown: %s (pid %d)", late[0].image, late[0].pid)
+		return 0, withClosed(fmt.Errorf("predecessor process appeared during shutdown: %s (pid %d)", late[0].image, late[0].pid), closeErr)
 	}
-	return len(found), nil
+	return len(found), withClosed(nil, closeErr)
 }
 
 // verifiedPredecessors returns retained handles for every process of sid whose
 // image is a jobd, jobdw or openabstractions executable inside folder. Processes
 // in skip that match their recorded creation time, or that have exited, are
 // omitted. The caller closes returned handles, including on error.
-func verifiedPredecessors(folder, sid string, ops userStopOps, skip map[uint32]int64) ([]predecessor, error) {
+func verifiedPredecessors(folders []string, sid string, ops userStopOps, skip map[uint32]int64) ([]predecessor, error) {
 	enumerated, entries, err := ops.snapshot()
 	if err != nil {
 		return nil, fmt.Errorf("cannot enumerate processes: %w", err)
@@ -194,7 +226,7 @@ func verifiedPredecessors(folder, sid string, ops userStopOps, skip map[uint32]i
 		if err != nil {
 			return found, fmt.Errorf("open %s (pid %d): %w", entry.name, entry.pid, err)
 		}
-		match, image, created, err := matchPredecessor(process, folder, sid, enumerated)
+		match, image, created, err := matchPredecessor(process, folders, sid, enumerated)
 		if err == nil && match && skip != nil {
 			if recorded, ok := skip[entry.pid]; ok && recorded == created {
 				match = false
@@ -205,9 +237,12 @@ func verifiedPredecessors(folder, sid string, ops userStopOps, skip map[uint32]i
 			}
 		}
 		if err != nil || !match {
-			process.close()
+			closeErr := process.close()
 			if err != nil {
-				return found, fmt.Errorf("%s (pid %d): %w", entry.name, entry.pid, err)
+				return found, withClosed(fmt.Errorf("%s (pid %d): %w", entry.name, entry.pid, err), closeErr)
+			}
+			if closeErr != nil {
+				return found, withClosed(nil, closeErr)
 			}
 			continue
 		}
@@ -219,7 +254,7 @@ func verifiedPredecessors(folder, sid string, ops userStopOps, skip map[uint32]i
 
 // matchPredecessor reads identity only through the retained handle. A process
 // created after the enumeration holds a reused PID and is refused outright.
-func matchPredecessor(process heldProcess, folder, sid string, enumerated int64) (bool, string, int64, error) {
+func matchPredecessor(process heldProcess, folders []string, sid string, enumerated int64) (bool, string, int64, error) {
 	image, err := process.image()
 	if err != nil {
 		if done, qerr := process.exited(); qerr == nil && done {
@@ -227,7 +262,7 @@ func matchPredecessor(process heldProcess, folder, sid string, enumerated int64)
 		}
 		return false, "", 0, fmt.Errorf("image path: %w", err)
 	}
-	if !predecessorImages[strings.ToLower(filepath.Base(image))] || !insideFolder(longPath(image), folder) {
+	if !predecessorImages[strings.ToLower(filepath.Base(image))] || !insideAnyFolder(longPath(image), folders) {
 		return false, image, 0, nil
 	}
 	owner, err := process.owner()
@@ -248,6 +283,15 @@ func matchPredecessor(process heldProcess, folder, sid string, enumerated int64)
 		return false, image, 0, fmt.Errorf("process identity changed: %s was created after enumeration, so its PID was reused", image)
 	}
 	return true, image, created, nil
+}
+
+func insideAnyFolder(image string, folders []string) bool {
+	for _, folder := range folders {
+		if insideFolder(image, folder) {
+			return true
+		}
+	}
+	return false
 }
 
 func insideFolder(image, folder string) bool {
@@ -278,7 +322,9 @@ func currentUserSID() (string, error) {
 }
 
 func systemUserStopOps() userStopOps {
-	return userStopOps{snapshot: processSnapshot, open: openHeldProcess}
+	env := systemExclusionEnv()
+	return userStopOps{snapshot: processSnapshot, open: openHeldProcess,
+		record: func(found []predecessor) error { return env.recordStopped(stoppedProcesses(found)) }}
 }
 
 func processSnapshot() (int64, []processEntry, error) {

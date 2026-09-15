@@ -99,7 +99,7 @@ func TestUserPredecessorMatcher(t *testing.T) {
 		"created after listing": {held(inside, testSID, 1001), false, true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			match, _, _, err := matchPredecessor(tc.process, testFolder, testSID, 1000)
+			match, _, _, err := matchPredecessor(tc.process, []string{testFolder}, testSID, 1000)
 			if match != tc.match || (err != nil) != tc.fails {
 				t.Fatalf("match=%v err=%v", match, err)
 			}
@@ -114,7 +114,7 @@ func TestUserStopTerminatesVerifiedPredecessorsOnly(t *testing.T) {
 	elsewhere := held(`C:\Other\jobd.exe`, testSID, 903)
 	entries := []processEntry{{10, "jobdw.exe"}, {11, "openabstractions.exe"}, {12, "jobd.exe"}, {13, "jobd.exe"}, {14, "notepad.exe"}}
 	ops, taken := fakeOps([][]processEntry{entries}, map[uint32]*fakeHeld{10: supervisor, 11: runtime, 12: stranger, 13: elsewhere})
-	stopped, err := stopUserPredecessors(context.Background(), testFolder, testSID, ops)
+	stopped, err := stopUserPredecessors(context.Background(), []string{testFolder}, testSID, ops)
 	if err != nil || stopped != 2 {
 		t.Fatalf("stopped=%d err=%v", stopped, err)
 	}
@@ -131,7 +131,7 @@ func TestUserStopTerminatesVerifiedPredecessorsOnly(t *testing.T) {
 
 func TestUserStopNothingRunning(t *testing.T) {
 	ops, _ := fakeOps([][]processEntry{{{4, "System"}}}, nil)
-	if stopped, err := stopUserPredecessors(context.Background(), testFolder, testSID, ops); err != nil || stopped != 0 {
+	if stopped, err := stopUserPredecessors(context.Background(), []string{testFolder}, testSID, ops); err != nil || stopped != 0 {
 		t.Fatalf("stopped=%d err=%v", stopped, err)
 	}
 }
@@ -139,7 +139,7 @@ func TestUserStopNothingRunning(t *testing.T) {
 func TestUserStopRefusesChangedCreationTime(t *testing.T) {
 	p := held(testFolder+`\tools\jobdw.exe`, testSID, 900, 950)
 	ops, _ := fakeOps([][]processEntry{{{10, "jobdw.exe"}}}, map[uint32]*fakeHeld{10: p})
-	_, err := stopUserPredecessors(context.Background(), testFolder, testSID, ops)
+	_, err := stopUserPredecessors(context.Background(), []string{testFolder}, testSID, ops)
 	if err == nil || !strings.Contains(err.Error(), "changed identity") || p.terminated != 0 {
 		t.Fatalf("err=%v terminated=%d", err, p.terminated)
 	}
@@ -151,7 +151,7 @@ func TestUserStopRefusesProcessThatDoesNotExit(t *testing.T) {
 	ops, _ := fakeOps([][]processEntry{{{10, "jobdw.exe"}}}, map[uint32]*fakeHeld{10: p})
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := stopUserPredecessors(ctx, testFolder, testSID, ops)
+	_, err := stopUserPredecessors(ctx, []string{testFolder}, testSID, ops)
 	if err == nil || !strings.Contains(err.Error(), "did not exit") || !strings.Contains(err.Error(), "pid 10") || !p.closed {
 		t.Fatalf("err=%v closed=%v", err, p.closed)
 	}
@@ -162,7 +162,7 @@ func TestUserStopRefusesProcessStartedDuringShutdown(t *testing.T) {
 	late := held(testFolder+`\tools\jobdw.exe`, testSID, 990)
 	ops, _ := fakeOps([][]processEntry{{{10, "jobdw.exe"}}, {{10, "jobdw.exe"}, {11, "jobdw.exe"}}},
 		map[uint32]*fakeHeld{10: first, 11: late})
-	_, err := stopUserPredecessors(context.Background(), testFolder, testSID, ops)
+	_, err := stopUserPredecessors(context.Background(), []string{testFolder}, testSID, ops)
 	if err == nil || !strings.Contains(err.Error(), "appeared during shutdown") || !late.closed {
 		t.Fatalf("err=%v", err)
 	}
@@ -272,7 +272,7 @@ func TestUserStopEndsInertProcessUnderFolder(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	stopped, err := stopUserPredecessors(ctx, root, sid, systemUserStopOps())
+	stopped, err := stopUserPredecessors(ctx, []string{root}, sid, systemUserStopOps())
 	if err != nil || stopped != 1 {
 		t.Fatalf("stopped=%d err=%v", stopped, err)
 	}
@@ -300,7 +300,7 @@ func TestUserStopLeavesProcessOutsideFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stopped, err := stopUserPredecessors(context.Background(), root, sid, systemUserStopOps())
+	stopped, err := stopUserPredecessors(context.Background(), []string{root}, sid, systemUserStopOps())
 	if err != nil || stopped != 0 {
 		t.Fatalf("stopped=%d err=%v", stopped, err)
 	}

@@ -50,15 +50,30 @@ func cmdService(args []string) {
 		err = serviceUninstall()
 	case "stop":
 		if request.userFolder != "" {
-			err = serviceStopUser(request.userFolder)
+			err = serviceStopUser(request.userFolder, request.related)
 		} else {
 			err = serviceStop()
 		}
+	case "start":
+		if request.scope == "machine" {
+			err = serviceStartMachine()
+		} else {
+			err = serviceStartUser(request.related)
+		}
+	case "begin-upgrade":
+		err = serviceBeginUpgrade(request.scope, request.userFolder, request.related)
+	case "end-upgrade":
+		err = serviceEndUpgrade(request.scope)
+	case "upgrade-check":
+		err = serviceUpgradeCheck()
 	case "run":
 		err = serviceRun(request.runtime)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "jobd:", err)
+		if errors.Is(err, errUpgradeInProgress) {
+			os.Exit(exitUpgradeInProgress)
+		}
 		os.Exit(1)
 	}
 }
@@ -187,7 +202,16 @@ func serviceQuiesce(remove bool) error {
 	}
 	defer windows.CloseServiceHandle(m)
 
-	gone, err := uninstallServices(ctx, func() ([]string, error) { return instances(m) }, func(ctx context.Context, name string) (bool, error) { return checkedService(ctx, m, name, remove) })
+	// A stop inside an installer transaction records each active instance in the
+	// machine upgrade exclusion before its stop control, so rollback restarts
+	// exactly those. Uninstall records nothing.
+	var record func(string) error
+	if !remove {
+		record = systemExclusionEnv().recordService
+	}
+	gone, err := uninstallServices(ctx, func() ([]string, error) { return instances(m) }, func(ctx context.Context, name string) (bool, error) {
+		return checkedService(ctx, m, name, remove, record)
+	})
 	if err != nil {
 		return err
 	}
@@ -260,9 +284,9 @@ func instances(m windows.Handle) ([]string, error) {
 }
 
 func deleteService(ctx context.Context, m windows.Handle, name string) (bool, error) {
-	return checkedService(ctx, m, name, true)
+	return checkedService(ctx, m, name, true, nil)
 }
-func checkedService(ctx context.Context, m windows.Handle, name string, remove bool) (bool, error) {
+func checkedService(ctx context.Context, m windows.Handle, name string, remove bool, record func(string) error) (bool, error) {
 	p, err := windows.UTF16PtrFromString(name)
 	if err != nil {
 		return false, err
@@ -301,6 +325,9 @@ func checkedService(ctx context.Context, m windows.Handle, name string, remove b
 	if remove {
 		ops.remove = func() error { return windows.DeleteService(h) }
 	}
+	if record != nil {
+		ops.record = func() error { return record(name) }
+	}
 	return stopAndDeleteService(ctx, ops)
 }
 
@@ -331,6 +358,9 @@ type removalOps struct {
 	stop   func() error
 	pin    func(uint32) (removalProcess, error)
 	remove func() error
+	// record, when set, runs once for an active instance before its stop
+	// control is sent. A failure sends no stop.
+	record func() error
 }
 
 // The SCM supplies the process identity. Pin and requery before requesting stop;
@@ -421,6 +451,11 @@ func stopAndDeleteService(ctx context.Context, ops removalOps) (bool, error) {
 			if err = ctx.Err(); err != nil {
 				return false, err
 			}
+			if ops.record != nil {
+				if err = ops.record(); err != nil {
+					return false, fmt.Errorf("record supervisor before stopping it: %w", err)
+				}
+			}
 			err = ops.stop()
 			if err != nil && !errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE) {
 				return false, fmt.Errorf("stop supervisor: %w", err)
@@ -467,6 +502,8 @@ type supervisor struct {
 	withRuntime bool
 	jobs        func(context.Context, []string) error
 	runtime     func(context.Context) error
+	// guard refuses activation while an installer replaces this installation.
+	guard func() error
 }
 
 func (h supervisor) Execute(scmArgs []string, r <-chan svc.ChangeRequest, s chan<- svc.Status) (bool, uint32) {
@@ -478,6 +515,18 @@ func (h supervisor) Execute(scmArgs []string, r <-chan svc.ChangeRequest, s chan
 	}
 
 	s <- svc.Status{State: svc.StartPending}
+	// An instance started during an upgrade transaction reports Running and then
+	// fails before it opens the store, so SCM recovery starts it again after the
+	// transaction releases the exclusion. Refusing before Running would be a
+	// start failure, which recovery never retries.
+	guard := h.guard
+	if guard == nil {
+		guard = refuseDuringUpgrade
+	}
+	if err := guard(); err != nil {
+		s <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+		return failed(err)
+	}
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 
@@ -541,10 +590,34 @@ func failed(err error) (bool, uint32) {
 // `service stop --user <install folder>` is the per-user form of the checked
 // upgrade stop. The verb is the same act; --user selects the account's own
 // processes under that folder in place of registered SCM instances.
+//
+// `--related <product codes>` adds the folders the related per-user products
+// recorded, which the installer passes as [WIX_UPGRADE_DETECTED].
+//
+// `begin-upgrade --user|--machine <folder> --related <codes>` writes the upgrade
+// exclusion, `end-upgrade --user|--machine` removes it on commit,
+// `start --machine` is the machine rollback restart, and `upgrade-check` exits
+// 3 while an upgrade of this installation is in progress.
 type serviceRequest struct {
 	command    string
 	runtime    bool
 	userFolder string
+	related    string
+	scope      string
+}
+
+// exitUpgradeInProgress is the status an activation path returns while an
+// installer transaction holds the upgrade exclusion.
+const exitUpgradeInProgress = 3
+
+func scopeFlag(flag string) string {
+	switch flag {
+	case "--user":
+		return "user"
+	case "--machine":
+		return "machine"
+	}
+	return ""
 }
 
 func serviceArguments(args []string) (serviceRequest, error) {
@@ -558,10 +631,34 @@ func serviceArguments(args []string) (serviceRequest, error) {
 			return serviceRequest{command: command}, nil
 		}
 	}
-	if len(args) == 3 && args[0] == "stop" && args[1] == "--user" && args[2] != "" {
-		return serviceRequest{command: "stop", userFolder: args[2]}, nil
+	if (len(args) == 3 || len(args) == 5) && args[0] == "stop" && args[1] == "--user" && args[2] != "" {
+		request := serviceRequest{command: "stop", userFolder: args[2]}
+		if len(args) == 3 {
+			return request, nil
+		}
+		if args[3] == "--related" && args[4] != "" {
+			request.related = args[4]
+			return request, nil
+		}
 	}
-	return serviceRequest{}, errors.New("service install|run [--runtime], service stop [--user <install folder>], or service uninstall")
+	if len(args) == 3 && args[0] == "start" && args[1] == "--related" && args[2] != "" {
+		return serviceRequest{command: "start", related: args[2], scope: "user"}, nil
+	}
+	if len(args) == 2 && args[0] == "start" && args[1] == "--machine" {
+		return serviceRequest{command: "start", scope: "machine"}, nil
+	}
+	if len(args) == 5 && args[0] == "begin-upgrade" && scopeFlag(args[1]) != "" && args[2] != "" && args[3] == "--related" && args[4] != "" {
+		return serviceRequest{command: "begin-upgrade", scope: scopeFlag(args[1]), userFolder: args[2], related: args[4]}, nil
+	}
+	if len(args) == 2 && args[0] == "end-upgrade" && scopeFlag(args[1]) != "" {
+		return serviceRequest{command: "end-upgrade", scope: scopeFlag(args[1])}, nil
+	}
+	if len(args) == 1 && args[0] == "upgrade-check" {
+		return serviceRequest{command: "upgrade-check"}, nil
+	}
+	return serviceRequest{}, errors.New("service install|run [--runtime], service stop [--user <install folder> [--related <product codes>]], " +
+		"service start --related <product codes> | --machine, service begin-upgrade --user|--machine <install folder> --related <product codes>, " +
+		"service end-upgrade --user|--machine, service upgrade-check, or service uninstall")
 }
 
 func serviceCommand(exe string, withRuntime bool) string {

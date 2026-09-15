@@ -121,9 +121,25 @@ func usage() {
                                made of it
   jobd service stop            checked stop of all registered instances; preserve
                                registrations, with one shared 60-second budget
-  jobd service stop --user <folder>  end this account's jobd, jobdw and
-                               openabstractions processes running from <folder>
-                               and confirm each exit, within 60 seconds
+  jobd service stop --user <folder> [--related <product codes>]
+                               end this account's jobd, jobdw and openabstractions
+                               processes running from <folder>, and from the
+                               folder each related per-user product recorded;
+                               confirm each exit, within 60 seconds
+  jobd service start --related <product codes>
+                               run each related per-user product's own Startup
+                               activation from the folder it recorded; what the
+                               installer runs when a failed upgrade rolls back;
+                               only products whose processes it stopped
+  jobd service start --machine restart the supervisor instances the machine
+                               upgrade stop recorded (machine rollback)
+  jobd service begin-upgrade --user|--machine <folder> --related <product codes>
+                               hold the upgrade exclusion for <folder> and the
+                               related products' folders; activation of those
+                               folders exits 3 until it is released
+  jobd service end-upgrade --user|--machine  release it (installer commit)
+  jobd service upgrade-check   exit 3 while an upgrade of this installation is
+                               in progress
   jobd status [--exit-code]    what is in the store right now; with the flag,
                                exit 1 unless a supervisor is alive (a HEALTHCHECK)
   jobd discover                ask the supervisor over its bus who it is and who
@@ -163,7 +179,7 @@ the drop folder:
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "jobd:", err)
+	complain("jobd:", err)
 	os.Exit(status(err))
 }
 
@@ -234,6 +250,7 @@ func sweepErrors(err error) []error {
 // answers `openabstractions serve jobd`, so the two can never drift into two
 // supervisors that behave differently.
 func cmdRun(args []string) {
+	honourUpgradeExclusion()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := runCommand(ctx, args); err != nil {

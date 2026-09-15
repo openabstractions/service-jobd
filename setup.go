@@ -25,11 +25,18 @@ func cmdSetup(args []string) {
 	machine := fs.Bool("machine", false, "write the machine-wide file instead of this user's")
 	show := fs.Bool("show", false, "print what is configured and where it came from")
 	need(fs, args)
+	say := func(format string, a ...any) {
+		if _, err := fmt.Printf(format, a...); err != nil {
+			fatal(err)
+		}
+	}
 
 	if *show {
-		cfg := config.Load()
-		fmt.Print(cfg.Describe())
-		fmt.Printf("\ntiers linked into this build: %v\n", download.RegisteredTiers())
+		// jobd is the provider that owns the embedded file configuration, so it
+		// selects it explicitly and reports no application deprecation warning.
+		cfg := config.LegacyLoad()
+		say("%s", cfg.Describe())
+		say("\ntiers linked into this build: %v\n", download.RegisteredTiers())
 		return
 	}
 
@@ -64,10 +71,10 @@ func cmdSetup(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Printf("wrote %s\n\n", path)
-	fmt.Print(config.Load().Describe())
-	fmt.Println()
-	fmt.Println("Every tool that speaks these abstractions now finds this by itself.")
-	fmt.Println("Nothing else needs configuring, and no application needs to know.")
+	say("wrote %s\n\n", path)
+	say("%s", config.LegacyLoad().Describe())
+	say("\n")
+	say("Every tool that speaks these abstractions now finds this by itself.\n")
+	say("Nothing else needs configuring, and no application needs to know.\n")
 	os.Exit(0)
 }

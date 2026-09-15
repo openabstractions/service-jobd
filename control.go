@@ -102,6 +102,7 @@ func cmdStart(args []string) {
 			fatal(err)
 		}
 	}
+	honourUpgradeExclusion()
 
 	self, err := os.Executable()
 	if err != nil {
@@ -136,6 +137,15 @@ func cmdStart(args []string) {
 	fmt.Printf("  listening at %s\n", got.Endpoint)
 	fmt.Printf("  delegates to %s\n", got.Tier)
 	fmt.Printf("  log          %s\n", got.Log)
+}
+
+// honourUpgradeExclusion ends an activation of an installation that an
+// installer transaction is replacing. Exit status 3 names that case.
+func honourUpgradeExclusion() {
+	if err := refuseDuringUpgrade(); err != nil {
+		complain("jobd:", err)
+		os.Exit(3)
+	}
 }
 
 func checkUnelevated(inspect func() (bool, error)) error {
